@@ -69,6 +69,10 @@ import {
   createPluginInstallerService,
 } from "../plugins/installer";
 import { withTimeout } from "../plugins/timeout";
+import {
+  createChatSharingService,
+  createShareRequests,
+} from "../features/solo/share-requests";
 import { createExternalApps } from "../features/agents/external-connection";
 
 export function createServices() {
@@ -107,6 +111,8 @@ export function createServices() {
       navigation.open({ version: 1, kind: "settings", section: "plugins" }),
   });
   createPluginInstallerService(ctx, { core: pluginInstallCore });
+  const shareRequests = createShareRequests();
+  createChatSharingService(ctx, shareRequests);
   const sidebarScope = new SidebarScopeService(ctx);
   const sidebarRows = new SidebarRowsService(ctx);
   const panels = new PanelsService(ctx);
@@ -309,6 +315,7 @@ export function createServices() {
     pages,
     sidebarSections,
     pluginInstallRequests,
+    shareRequests,
     sidebarScope,
     sidebarRows,
     panels,
