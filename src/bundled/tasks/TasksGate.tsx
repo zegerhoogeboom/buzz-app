@@ -2,20 +2,20 @@ import type { ReactNode } from "react";
 import type { RelaySession } from "../../features/relay/session";
 import { Button } from "../../shared/design-system/ui/Button";
 import { LoadingRegion } from "../../shared/design-system/ui/LoadingRegion";
-import { useTasksChannel } from "./react";
+import { type TasksChannel, useTasksChannel } from "./react";
 import styles from "./Tasks.module.css";
 
-/** Opens the community's tasks channel before showing `children`, making it
- * on the community's first use. The page and the panel share it. */
+/** Looks up the community's tasks channel before showing `children`. The
+ * page and the panel share it; the first save makes it. */
 export function TasksGate({
   session,
   children,
 }: {
   session: RelaySession;
-  children(channel: string): ReactNode;
+  children(channel: TasksChannel): ReactNode;
 }) {
   const channel = useTasksChannel(session);
-  if (channel.status === "found") return children(channel.channelId);
+  if (channel.status === "ready") return children(channel.channel);
   return (
     <div className={styles.body}>
       <LoadingRegion

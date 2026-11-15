@@ -23,14 +23,23 @@ import {
   taskOf,
 } from "./model";
 import { saveTask } from "./store";
-import { openTasksChannel } from "./tasks-channel";
+import { findTasksChannel, openTasksChannel } from "./tasks-channel";
 
-type Agents = Pick<AgentsService, "addTool" | "relay">;
+type Agents = Pick<AgentsService, "addTool" | "relay" | "snapshot">;
+type Client = { key: string; signal?: AbortSignal | undefined };
 type Args = Record<string, unknown>;
 
 /** How many times an agent's change is reapplied over someone else's edit. */
 const ATTEMPTS = 3;
 const LIST_LIMIT = 50;
+/** How long one step of relay work may take. Waiting on the owner's
+ * confirmation has no deadline but the agent's own. */
+const STEP_TIMEOUT = 60_000;
+
+const deadline = (client: Client) =>
+  client.signal
+    ? AbortSignal.any([client.signal, AbortSignal.timeout(STEP_TIMEOUT)])
+    : AbortSignal.timeout(STEP_TIMEOUT);
 
 const statusOf = (value: unknown): TaskStatus | undefined =>
   statuses.find((status) => status === value);
@@ -82,14 +91,27 @@ export function addTaskTools(
   agents: Agents,
   sharing: () => ChatSharing | undefined,
 ) {
-  /** The owner's session for this agent's community, and its tasks channel. */
-  async function open(client: { key: string; signal?: AbortSignal }) {
+  /** The owner's session for this agent's community. */
+  function sessionOf(client: Client) {
     const relay = agents.relay(client.key)?.snapshot();
     if (relay?.status !== "ready")
       throw new Error("Tasks need this conversation's community");
-    const signal = client.signal ?? AbortSignal.timeout(60_000);
-    const channel = await openTasksChannel(relay.session, signal);
-    return { session: relay.session, channel, signal };
+    return relay.session;
+  }
+
+  /** The community's tasks channel; reading never makes it. */
+  async function lookup(client: Client) {
+    const session = sessionOf(client);
+    const signal = deadline(client);
+    const channel = await findTasksChannel(session, signal);
+    return { session, channel, signal };
+  }
+
+  /** The agent's name, so the owner's confirmation says who asks. */
+  function agentName(client: Client) {
+    const { agents: here, running } = agents.snapshot();
+    return [...here, ...running].find((agent) => agent.key === client.key)
+      ?.name;
   }
 
   async function current(
@@ -125,12 +147,17 @@ export function addTaskTools(
   }
 
   async function cleared(
+    client: Client,
     session: RelaySession,
     chat: string,
-    signal: AbortSignal,
+    task: string,
   ) {
-    const outcome = await readyToLink(session, sharing(), chat, signal);
-    signal.throwIfAborted();
+    const outcome = await readyToLink(session, sharing(), chat, {
+      task,
+      agent: agentName(client),
+      signal: client.signal,
+    });
+    client.signal?.throwIfAborted();
     if (outcome === "cancelled")
       throw new Error(
         "Your owner chose not to share this chat, so it wasn't linked.",
@@ -142,7 +169,7 @@ export function addTaskTools(
   agents.addTool({
     name: "tasks_create",
     description:
-      "Creates a task in this community's Tasks: a title, a Markdown description of what was noticed and why, and image links. Links this conversation unless link is false. Linking a private Solo chat makes it View only for the community, so your owner sees a confirmation first; nothing is created if they decline.",
+      "Creates a task in this community's Tasks: a title, a Markdown description of what was noticed and why, and image links. Only the title is required. Everyone in the community can read a task, so never put in it what a private conversation shouldn't share. Links this conversation unless link is false. Linking a private Solo chat makes it View only for the community, so your owner sees a confirmation first; nothing is created if they decline.",
     inputSchema: {
       type: "object",
       properties: {
@@ -174,15 +201,24 @@ export function addTaskTools(
         images: imagesArg(args) ?? [],
         links: chat ? [chat] : [],
       });
-      const { session, channel, signal } = await open(client);
-      if (chat) await cleared(session, chat, signal);
+      const session = sessionOf(client);
+      if (chat) await cleared(client, session, chat, fields.title);
+      const signal = deadline(client);
+      const channel = await openTasksChannel(session, signal);
+      // Named before saving, so a retry after an unclear outcome can check.
+      const id = crypto.randomUUID();
       const result = await saveTask(
         session,
         channel,
         fields,
         undefined,
         signal,
-      );
+        id,
+      ).catch((reason: unknown) => {
+        throw new Error(
+          `${reason instanceof Error ? reason.message : "Couldn't create the task."} It may still have been saved as task ${id}: read it with tasks_read before creating it again.`,
+        );
+      });
       if (result.status !== "saved")
         throw new Error("Couldn't create the task");
       return `Created task ${result.task.id}.\n\n${describe(result.task, session)}`;
@@ -210,8 +246,10 @@ export function addTaskTools(
       additionalProperties: false,
     },
     async call(client, context, args) {
-      const { session, channel, signal } = await open(client);
+      const { session, channel, signal } = await lookup(client);
       const id = textArg(args, "id");
+      if (!channel)
+        return id ? `No task ${id} here` : "No tasks yet in this community.";
       if (id)
         return describe(await current(session, channel, id, signal), session);
       const read = session.snapshotRead;
@@ -286,7 +324,8 @@ export function addTaskTools(
       if (args.status !== undefined && !status)
         throw new Error(`status must be one of ${statuses.join(", ")}`);
       const images = imagesArg(args);
-      const { session, channel, signal } = await open(client);
+      const { session, channel, signal } = await lookup(client);
+      if (!channel) throw new Error(`No task ${id} here`);
       const task = await change(
         session,
         channel,
@@ -326,11 +365,13 @@ export function addTaskTools(
       const chat = textArg(args, "channel") ?? context.channel;
       if (!isChannelId(chat)) throw new Error("channel must be a channel id");
       const unlink = args.unlink === true;
-      const { session, channel, signal } = await open(client);
+      const found = await lookup(client);
+      const { session, channel } = found;
+      if (!channel) throw new Error(`No task ${id} here`);
       if (!unlink) {
         // The task must exist before the owner is asked to share for it.
-        await current(session, channel, id, signal);
-        await cleared(session, chat, signal);
+        const task = await current(session, channel, id, found.signal);
+        await cleared(client, session, chat, task.title);
       }
       const task = await change(
         session,
@@ -342,7 +383,7 @@ export function addTaskTools(
             ? base.links.filter((link) => link !== chat)
             : [...base.links, chat],
         }),
-        signal,
+        deadline(client),
       );
       return `${unlink ? "Unlinked. Its access is unchanged." : "Linked."}\n\n${describe(task, session)}`;
     },

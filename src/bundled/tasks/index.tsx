@@ -94,8 +94,8 @@ export const apply: PluginModule["apply"] = (ctx) => {
             session={session}
             channel={channel}
             chat={channelContext.channelId}
-            readyToLink={(channelId) =>
-              readyToLink(session, sharing(), channelId)
+            readyToLink={(channelId, task) =>
+              readyToLink(session, sharing(), channelId, { task })
             }
             openConversation={(channelId) =>
               void ctx.navigation.open({

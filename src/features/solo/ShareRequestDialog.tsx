@@ -41,11 +41,12 @@ function ShareRequestConfirmation({
   }, []);
   const decline = () => requests.settle(request.id, "cancelled");
   const confirm = async () => {
-    if (busy) return;
+    const signal = controller.current?.signal;
+    if (busy || !signal || signal.aborted) return;
     setBusy(true);
     setError("");
-    const signal = controller.current?.signal;
-    if (!signal || signal.aborted) return;
+    // The chat may become View only from here, so its caller can't withdraw.
+    requests.confirm(request.id);
     try {
       await shareSoloChatAccess(request.session, request.details.channelId, {
         signal,
@@ -61,16 +62,19 @@ function ShareRequestConfirmation({
       setBusy(false);
     }
   };
+  // A chat without a name is told apart by its id.
+  const chat = request.details.name
+    ? `“${request.details.name}”`
+    : `chat ${request.details.channelId.slice(0, 8)}`;
   return (
     <AlertDialog
-      title={
-        request.details.name
-          ? `Share “${request.details.name}”?`
-          : "Share this chat?"
-      }
+      title={`Share ${chat}?`}
       description={
         <>
-          A plugin asked to change this chat from Private to View only.{" "}
+          {request.requester} asked to change {chat} from Private to View only.
+          {request.reason ? (
+            <span className="mt-3 block">Reason given: {request.reason}</span>
+          ) : null}
           <span className="mt-3 block">{soloShareDisclosure()}</span>
         </>
       }

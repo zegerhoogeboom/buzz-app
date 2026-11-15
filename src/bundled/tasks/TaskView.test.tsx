@@ -10,6 +10,7 @@ import { TaskView } from "./TaskView";
 afterEach(cleanup);
 
 const viewer = "a".repeat(64);
+const tasksChannel = { id: "tasks", open: async () => "tasks" };
 const chat = "11111111-1111-4111-8111-111111111111";
 const revision = (id: string, title: string, content: object = {}) => ({
   id,
@@ -55,7 +56,7 @@ it("keeps the person's text on a conflict, then saves over the newer version", a
   render(
     <TaskView
       session={session}
-      channel="tasks"
+      channel={tasksChannel}
       task={mine}
       readyToLink={async () => "shared"}
       openConversation={() => {}}
@@ -85,7 +86,7 @@ it("shows their version when asked", async () => {
   render(
     <TaskView
       session={session}
-      channel="tasks"
+      channel={tasksChannel}
       task={mine}
       readyToLink={async () => "shared"}
       openConversation={() => {}}
@@ -111,7 +112,7 @@ it("links the current chat only once it may be linked", async () => {
   render(
     <TaskView
       session={session}
-      channel="tasks"
+      channel={tasksChannel}
       task={mine}
       currentChat={chat}
       readyToLink={readyToLink}
@@ -135,7 +136,7 @@ it("asks to share a new task's chat only at Create, and saves nothing if decline
   render(
     <TaskView
       session={session}
-      channel="tasks"
+      channel={tasksChannel}
       task={undefined}
       newLinks={[chat]}
       readyToLink={readyToLink}
@@ -151,6 +152,30 @@ it("asks to share a new task's chat only at Create, and saves nothing if decline
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "This chat wasn’t shared, so the task wasn’t saved.",
   );
-  expect(readyToLink).toHaveBeenCalledWith(chat);
+  expect(readyToLink).toHaveBeenCalledWith(chat, expect.any(String));
   expect(signed).toHaveLength(0);
+});
+
+it("makes the tasks channel only when the community's first task is saved", async () => {
+  const { session, signed } = setup(async () => "");
+  const open = vi.fn(async () => "made");
+  const onSaved = vi.fn();
+  render(
+    <TaskView
+      session={session}
+      channel={{ id: undefined, open }}
+      task={undefined}
+      readyToLink={async () => "shared"}
+      openConversation={() => {}}
+      onSaved={onSaved}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Title"), {
+    target: { value: "Just a title" },
+  });
+  expect(open).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+  await vi.waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(open).toHaveBeenCalledOnce();
+  expect(signed[0]?.tags).toContainEqual(["h", "made"]);
 });

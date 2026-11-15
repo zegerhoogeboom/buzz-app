@@ -8,20 +8,27 @@ import {
 import type { RelaySession } from "../../features/relay/session";
 import type { Task } from "./model";
 import { type TasksState, type TasksView, watchTasks } from "./store";
-import { openTasksChannel } from "./tasks-channel";
+import { findTasksChannel, openTasksChannel } from "./tasks-channel";
 
 const loadingState: TasksState = { status: "loading", tasks: [] };
-const loading: TasksView = {
-  snapshot: () => loadingState,
+const still = (state: TasksState): TasksView => ({
+  snapshot: () => state,
   subscribe: () => () => {},
   dispose: () => {},
-};
+});
+const loading = still(loadingState);
+/** A community nobody has saved a task in yet. */
+const none = still({ status: "live", tasks: [] });
 
 /** Every current task in `channel`, live while mounted. The watch starts in
  * an effect so each mount owns, and disposes, exactly the one it opened. */
-export function useTasks(session: RelaySession, channel: string) {
+export function useTasks(session: RelaySession, channel: string | undefined) {
   const [view, setView] = useState<TasksView>(loading);
   useEffect(() => {
+    if (!channel) {
+      setView(none);
+      return;
+    }
     const next = watchTasks(session, channel);
     setView(next);
     return next.dispose;
@@ -32,7 +39,10 @@ export function useTasks(session: RelaySession, channel: string) {
 /** Tasks from the live view, with this device's saves shown until the
  * relay's copy has them: the same revision, or a strictly newer one. A tie
  * keeps the save, the newest this device knows of. */
-export function useTasksWithSaved(session: RelaySession, channel: string) {
+export function useTasksWithSaved(
+  session: RelaySession,
+  channel: string | undefined,
+) {
   const state = useTasks(session, channel);
   const [saved, setSavedMap] = useState<ReadonlyMap<string, Task>>(new Map());
   const setSaved = useCallback(
@@ -57,23 +67,30 @@ export function useTasksWithSaved(session: RelaySession, channel: string) {
   return { ...state, tasks, setSaved };
 }
 
+/** The community's tasks channel as the page and panel hold it: `id` once
+ * someone has saved a task, and `open` to make it on the first save. */
+export type TasksChannel = Readonly<{
+  id: string | undefined;
+  open(signal: AbortSignal): Promise<string>;
+}>;
+
 export type TasksChannelState =
   | Readonly<{ status: "loading" }>
   | Readonly<{ status: "error"; error: string; retry(): void }>
-  | Readonly<{ status: "found"; channelId: string }>;
+  | Readonly<{ status: "ready"; channel: TasksChannel }>;
 
-/** The community's tasks channel, made on its first use. */
+/** The community's tasks channel, looked up but never made by looking. */
 export function useTasksChannel(session: RelaySession): TasksChannelState {
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<
-    { channelId: string } | { error: string } | undefined
+    { channelId: string | undefined } | { error: string } | undefined
   >();
   const retry = useCallback(() => setAttempt((count) => count + 1), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: a retry is a new attempt.
   useEffect(() => {
     const controller = new AbortController();
     setResult(undefined);
-    openTasksChannel(session, controller.signal).then(
+    findTasksChannel(session, controller.signal).then(
       (channelId) => !controller.signal.aborted && setResult({ channelId }),
       (reason: unknown) =>
         !controller.signal.aborted &&
@@ -84,7 +101,20 @@ export function useTasksChannel(session: RelaySession): TasksChannelState {
     );
     return () => controller.abort();
   }, [session, attempt]);
+  const channelId =
+    result && "channelId" in result ? result.channelId : undefined;
+  const channel = useMemo<TasksChannel>(
+    () => ({
+      id: channelId,
+      async open(signal) {
+        const id = await openTasksChannel(session, signal);
+        setResult({ channelId: id });
+        return id;
+      },
+    }),
+    [session, channelId],
+  );
   if (!result) return { status: "loading" };
   if ("error" in result) return { status: "error", error: result.error, retry };
-  return { status: "found", channelId: result.channelId };
+  return { status: "ready", channel };
 }

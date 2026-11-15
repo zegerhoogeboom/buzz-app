@@ -57,7 +57,7 @@ function fixture(byCreator: Record<string, ChannelSummary[]>) {
     },
     channelCreation: { create },
   } as unknown as RelaySession;
-  return { session, create };
+  return { session, create, events };
 }
 
 it("uses the community's oldest open tasks channel, whoever made it", async () => {
@@ -86,5 +86,44 @@ it("makes the channel on the community's first use", async () => {
       visibility: "open",
       labels: [TASKS_LABEL],
     }),
+  );
+});
+
+it("makes one channel when the page, panel and tools open together", async () => {
+  const { session, create } = fixture({});
+  const signal = new AbortController().signal;
+  const opened = await Promise.all([
+    openTasksChannel(session, signal),
+    openTasksChannel(session, signal),
+    openTasksChannel(session, signal),
+  ]);
+  expect(opened).toEqual(["mine", "mine", "mine"]);
+  expect(create).toHaveBeenCalledOnce();
+});
+
+it("lets one caller stop waiting without failing the others", async () => {
+  const { session, create } = fixture({});
+  const leaving = new AbortController();
+  const left = openTasksChannel(session, leaving.signal);
+  const staying = openTasksChannel(session, new AbortController().signal);
+  leaving.abort();
+  await expect(left).rejects.toThrow();
+  expect(await staying).toBe("mine");
+  expect(create).toHaveBeenCalledOnce();
+});
+
+it("converges on the older channel when two first saves race", async () => {
+  const byCreator: Record<string, ChannelSummary[]> = {};
+  const { session, events } = fixture(byCreator);
+  // Bob's channel lands, older, while Alice is creating hers.
+  const create = session.channelCreation.create as ReturnType<typeof vi.fn>;
+  create.mockImplementationOnce(async () => {
+    byCreator[bob] = [channel("bobs", bob, 3)];
+    byCreator[alice] = [channel("mine", alice, 9)];
+    events.push(metadata("bobs", bob), metadata("mine", alice));
+    return "mine";
+  });
+  expect(await openTasksChannel(session, new AbortController().signal)).toBe(
+    "bobs",
   );
 });

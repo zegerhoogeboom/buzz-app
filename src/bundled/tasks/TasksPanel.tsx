@@ -18,7 +18,7 @@ import {
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
 import { isOpenStatus, type Task } from "./model";
-import { useTasksWithSaved } from "./react";
+import { type TasksChannel, useTasksWithSaved } from "./react";
 import { saveTask } from "./store";
 import { StatusIcon } from "./StatusIcon";
 import { TaskView, type TaskViewProps } from "./TaskView";
@@ -37,12 +37,11 @@ export function TasksPanel({
   openConversation,
 }: {
   session: RelaySession;
-  /** The tasks channel. */
-  channel: string;
+  channel: TasksChannel;
   /** The conversation this panel sits beside. */
   chat: string;
 } & Pick<TaskViewProps, "readyToLink" | "openConversation">) {
-  const state = useTasksWithSaved(session, channel);
+  const state = useTasksWithSaved(session, channel.id);
   const notify = useToastNotification();
   // A new task carries the links it starts with; consent waits for Create.
   const [open, setOpen] = useState<string | { newLinks: string[] }>();
@@ -54,8 +53,8 @@ export function TasksPanel({
     .filter((task) => isOpenStatus(task.status) && !task.links.includes(chat))
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, LINK_CHOICES);
-  const cleared = async () => {
-    const outcome = await readyToLink(chat);
+  const cleared = async (task: Task) => {
+    const outcome = await readyToLink(chat, task.title);
     if (outcome === "unavailable")
       notify("Only this chat’s owner can link it to a task.", "error");
     return outcome === "shared";
@@ -64,10 +63,12 @@ export function TasksPanel({
     if (linking) return;
     setLinking(true);
     try {
-      if (!(await cleared())) return;
+      if (!(await cleared(task))) return;
+      // A task to link to means the tasks channel exists.
+      if (!channel.id) return;
       const result = await saveTask(
         session,
-        channel,
+        channel.id,
         { ...task, links: [...task.links, chat] },
         task,
       );

@@ -36,7 +36,7 @@ import {
 } from "../../shared/design-system/ui/PanelHeader";
 import { readyToLink } from "./linking";
 import { filterTasks, type TaskFilter } from "./model";
-import { useTasksWithSaved } from "./react";
+import { type TasksChannel, useTasksWithSaved } from "./react";
 import { StatusIcon } from "./StatusIcon";
 import { TasksGate } from "./TasksGate";
 import { type TaskDraft, TaskView } from "./TaskView";
@@ -103,8 +103,8 @@ export function TasksPage({
               <TaskBoard
                 session={connection.session}
                 channel={channel}
-                readyToLink={(channelId) =>
-                  readyToLink(connection.session, sharing, channelId)
+                readyToLink={(channelId, task) =>
+                  readyToLink(connection.session, sharing, channelId, { task })
                 }
                 openConversation={(channelId) =>
                   void navigator.open({
@@ -165,11 +165,11 @@ function TaskBoard({
   openConversation,
 }: {
   session: RelaySession;
-  channel: string;
+  channel: TasksChannel;
   readyToLink: TaskViewLink;
   openConversation(channelId: string): void;
 }) {
-  const state = useTasksWithSaved(session, channel);
+  const state = useTasksWithSaved(session, channel.id);
   const mine = useMyChannels(session);
   const [filter, setFilter] = useState<TaskFilter>(allOpen);
   const [selected, setSelected] = useState<string>();

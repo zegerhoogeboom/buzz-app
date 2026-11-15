@@ -112,7 +112,16 @@ export function createServices() {
   });
   createPluginInstallerService(ctx, { core: pluginInstallCore });
   const shareRequests = createShareRequests();
-  createChatSharingService(ctx, shareRequests);
+  createChatSharingService(ctx, shareRequests, (id) => {
+    const { configuration } = plugins.snapshot();
+    const name =
+      configuration.status === "ready"
+        ? configuration.catalog.plugins.find(
+            (plugin) => plugin.manifest.id === id,
+          )?.manifest.name
+        : undefined;
+    return name?.replace(/\s+/g, " ").trim().slice(0, 80) || id;
+  });
   const sidebarScope = new SidebarScopeService(ctx);
   const sidebarRows = new SidebarRowsService(ctx);
   const panels = new PanelsService(ctx);

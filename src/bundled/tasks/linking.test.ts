@@ -15,12 +15,24 @@ it("asks the owner only before linking a Solo chat that isn't public", async () 
     { id: "unknown", channelType: "solo" },
     { id: "channel", channelType: "stream", visibility: "private" },
   ]);
-  expect(await readyToLink(relay, sharing, "channel")).toBe("shared");
-  expect(await readyToLink(relay, sharing, "shared")).toBe("shared");
-  expect(await readyToLink(relay, sharing, "elsewhere")).toBe("shared");
+  expect(await readyToLink(relay, sharing, "channel", { task: "T" })).toBe(
+    "shared",
+  );
+  expect(await readyToLink(relay, sharing, "shared", { task: "T" })).toBe(
+    "shared",
+  );
+  expect(await readyToLink(relay, sharing, "elsewhere", { task: "T" })).toBe(
+    "shared",
+  );
   expect(requestShare).not.toHaveBeenCalled();
-  expect(await readyToLink(relay, sharing, "solo")).toBe("cancelled");
-  expect(await readyToLink(relay, sharing, "unknown")).toBe("cancelled");
+  expect(await readyToLink(relay, sharing, "solo", { task: "T" })).toBe(
+    "cancelled",
+  );
+  expect(await readyToLink(relay, sharing, "unknown", { task: "T" })).toBe(
+    "cancelled",
+  );
   expect(requestShare).toHaveBeenCalledTimes(2);
-  expect(await readyToLink(relay, undefined, "solo")).toBe("unavailable");
+  expect(await readyToLink(relay, undefined, "solo", { task: "T" })).toBe(
+    "unavailable",
+  );
 });

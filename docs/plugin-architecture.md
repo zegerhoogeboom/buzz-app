@@ -416,16 +416,21 @@ type ChatSharing = {
   requestShare(
     session: RelaySession,
     channelId: string,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; reason?: string },
   ): Promise<"shared" | "cancelled" | "unavailable">;
 };
 ```
 
-The host shows its own "Share this chat?" confirmation with the chat's name and
-the View only disclosure; nothing changes unless the viewer confirms. Only the
+The host shows its own "Share this chat?" confirmation with the chat's name (or
+a short id), the asking plugin's name, the plugin's one-sentence `reason` as
+its own words, and the View only disclosure; nothing changes unless the viewer
+confirms. Only the
 viewer's own Solo chat can be shared (`"unavailable"` otherwise), and one
 already View only or public resolves `"shared"` with no dialog. Aborting
-`signal`, or the plugin stopping, withdraws the request as `"cancelled"`. Agent
+`signal`, or the plugin stopping, withdraws the request as `"cancelled"` until
+the viewer chooses Share; from then on only the viewer ends it, so the outcome
+always matches the chat's access. Don't put a deadline on `signal`: the viewer
+answers in their own time. Agent
 tools that link chats call it too, so an agent can't skip the confirmation. Ask
 only as the change that needs it is saved, so declining never leaves a chat
 shared for nothing.

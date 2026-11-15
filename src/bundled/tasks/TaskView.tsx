@@ -36,6 +36,7 @@ import {
   type TaskStatus,
 } from "./model";
 import { StatusIcon } from "./StatusIcon";
+import type { TasksChannel } from "./react";
 import { saveTask } from "./store";
 import type { ChatShareOutcome } from "../../features/solo/share-requests";
 import styles from "./Tasks.module.css";
@@ -70,15 +71,14 @@ const fieldsOf = (task: Task): TaskFields => ({
 
 export type TaskViewProps = {
   session: RelaySession;
-  /** The tasks channel. */
-  channel: string;
+  channel: TasksChannel;
   /** The task's current revision; undefined starts a new task. */
   task: Task | undefined;
   /** The conversation this view sits beside, which "Link this chat" links. */
   currentChat?: string | undefined;
   /** Resolves "shared" once `channelId` may be linked; a private Solo chat
    * first asks its owner to make it View only. */
-  readyToLink(channelId: string): Promise<ChatShareOutcome>;
+  readyToLink(channelId: string, task: string): Promise<ChatShareOutcome>;
   openConversation(channelId: string): void;
   onSaved(task: Task): void;
   /** Conversations a new task starts linked to, already cleared to link. */
@@ -109,12 +109,15 @@ export function TaskView(props: TaskViewProps) {
       for (const added of fields.links.filter(
         (link) => !base?.links.includes(link),
       )) {
-        const outcome = await props.readyToLink(added);
+        const outcome = await props.readyToLink(added, fields.title);
         if (outcome !== "shared") return { status: "declined", outcome };
       }
+      // The community's first saved task makes its tasks channel.
+      const target =
+        channel.id ?? (await channel.open(AbortSignal.timeout(30_000)));
       const result = await saveTask(
         session,
-        channel,
+        target,
         fields,
         base,
         undefined,

@@ -1,8 +1,11 @@
 // The community's tasks live in one open NIP-CL system channel: hidden from
 // channel lists, readable and writable by everyone in the community. The
-// first person to use Tasks creates it, and its creator owns it. Concurrent
-// first uses can each create one; everyone uses the oldest (NIP-CL "Choosing
-// one channel"), so they converge before any task is saved.
+// first person to save a task creates it, and its creator owns it; looking
+// never does. Concurrent first saves can each create one; everyone uses the
+// oldest (NIP-CL "Choosing one channel"), and each creator looks again after
+// creating, so they converge before any task is saved. What remains: a
+// connection keeps the channel it found, so a channel archived later, or more
+// than MAX_CREATORS racing creators, is only resolved again on reconnect.
 import {
   channelIdentity,
   compareChannelAge,
@@ -26,6 +29,11 @@ const isTasksChannel = (channel: ChannelSummary) =>
 // Once found, a community's tasks channel stays put for that connection, so
 // each panel and tool call doesn't look it up again.
 const found = new WeakMap<RelaySession, string>();
+// One creation per connection at a time: the page, the panel and agent tools
+// opening together share it.
+const opening = new WeakMap<RelaySession, Promise<string>>();
+/** How long one shared creation may take, whoever is waiting for it. */
+const OPEN_TIMEOUT = 30_000;
 
 /** The community's tasks channel, or undefined when nobody has made one.
  * Throws when it can't tell. */
@@ -85,11 +93,25 @@ export async function findTasksChannel(
   return oldest?.id;
 }
 
-/** The tasks channel, created when this is the community's first use. */
-export async function openTasksChannel(
+/** The tasks channel, created when this is the community's first save. */
+export function openTasksChannel(
   session: RelaySession,
   signal: AbortSignal,
 ): Promise<string> {
+  signal.throwIfAborted();
+  let shared = opening.get(session);
+  if (!shared) {
+    shared = create(session, AbortSignal.timeout(OPEN_TIMEOUT));
+    opening.set(session, shared);
+    const clear = () => {
+      if (opening.get(session) === shared) opening.delete(session);
+    };
+    shared.then(clear, clear);
+  }
+  return untilAborted(shared, signal);
+}
+
+async function create(session: RelaySession, signal: AbortSignal) {
   const existing = await findTasksChannel(session, signal);
   if (existing) return existing;
   await session.channelCreation.create({
@@ -104,4 +126,15 @@ export async function openTasksChannel(
   const created = await findTasksChannel(session, signal);
   if (!created) throw new Error("Tasks isn’t ready yet. Try again.");
   return created;
+}
+
+/** `work`, unless `signal` aborts first; the work itself goes on for others. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    work
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", stop));
+  });
 }

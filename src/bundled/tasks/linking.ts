@@ -7,12 +7,17 @@ import type {
   ChatSharing,
 } from "../../features/solo/share-requests";
 
-/** Whether `channelId` may be linked now, asking to share it when needed. */
+/** Whether `channelId` may be linked to the task titled `task`, asking to
+ * share it when needed. `agent` names the agent asking, if one is. */
 export async function readyToLink(
   session: RelaySession,
   sharing: ChatSharing | undefined,
   channelId: string,
-  signal?: AbortSignal,
+  options: Readonly<{
+    task: string;
+    agent?: string | undefined;
+    signal?: AbortSignal | undefined;
+  }>,
 ): Promise<ChatShareOutcome> {
   const channel = session.channels
     .list()
@@ -21,6 +26,11 @@ export async function readyToLink(
   if (channel?.channelType !== "solo" || channel.visibility === "public")
     return "shared";
   return sharing
-    ? sharing.requestShare(session, channelId, { signal })
+    ? sharing.requestShare(session, channelId, {
+        signal: options.signal,
+        reason: options.agent
+          ? `Your agent ${options.agent} wants to link it to the task “${options.task}”.`
+          : `To link it to the task “${options.task}”.`,
+      })
     : "unavailable";
 }

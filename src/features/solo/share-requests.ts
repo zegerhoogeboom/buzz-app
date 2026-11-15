@@ -13,13 +13,20 @@ export type ChatSharing = Readonly<{
    * viewer confirms. Resolves `"shared"` once the chat is View only or public
    * (at once, without a dialog, when it already is), `"cancelled"` when the
    * viewer declines or the caller stops, and `"unavailable"` when the viewer
-   * cannot share it. Never rejects. Aborting `signal` withdraws the request.
+   * cannot share it. Never rejects. Aborting `signal` withdraws the request
+   * until the viewer chooses Share; from then on only the viewer ends it.
+   * `reason` is one sentence the dialog shows as the caller's own words.
    */
   requestShare(
     session: RelaySession,
     channelId: string,
-    options?: Readonly<{ signal?: AbortSignal | undefined }>,
+    options?: ShareRequestOptions,
   ): Promise<ChatShareOutcome>;
+}>;
+
+export type ShareRequestOptions = Readonly<{
+  signal?: AbortSignal | undefined;
+  reason?: string | undefined;
 }>;
 
 declare module "@deepseek-ai/cordis" {
@@ -34,7 +41,18 @@ export type ShareRequest = Readonly<{
   id: string;
   session: RelaySession;
   details: ChannelDetails;
+  /** The asking plugin's name, as the app knows it. */
+  requester: string;
+  /** The caller's own one-sentence reason, if it gave one. */
+  reason?: string | undefined;
 }>;
+
+/** Who asks and why, as the dialog shows them. */
+type Asker = Readonly<{ requester: string; reason?: string | undefined }>;
+
+const MAX_REASON = 200;
+const reasonOf = (reason: string | undefined) =>
+  reason?.replace(/\s+/g, " ").trim().slice(0, MAX_REASON) || undefined;
 
 type Pending = ShareRequest & {
   readonly done: Promise<ChatShareOutcome>;
@@ -56,10 +74,14 @@ export function createShareRequests() {
   const notify = () => {
     for (const listener of listeners) listener();
   };
+  // Requests the viewer chose Share on: their caller can no longer withdraw
+  // them, since the chat may already be View only.
+  const confirming = new Set<string>();
   const settle = (id: string, outcome: ChatShareOutcome) => {
     const item = pending.find((entry) => entry.id === id);
     if (!item) return;
     pending = pending.filter((entry) => entry !== item);
+    confirming.delete(id);
     item.controller.abort();
     item.resolve(outcome);
     notify();
@@ -68,6 +90,7 @@ export function createShareRequests() {
   async function request(
     session: RelaySession,
     channelId: string,
+    asker: Asker,
     lifetime?: (end: () => void) => () => void,
     signal?: AbortSignal,
   ): Promise<ChatShareOutcome> {
@@ -107,11 +130,22 @@ export function createShareRequests() {
       const id = `share-${++next}`;
       pending = [
         ...pending,
-        { id, session, details, done, resolve, controller },
+        {
+          id,
+          session,
+          details,
+          requester: asker.requester,
+          reason: reasonOf(asker.reason),
+          done,
+          resolve,
+          controller,
+        },
       ];
       controller.signal.addEventListener(
         "abort",
-        () => settle(id, "cancelled"),
+        () => {
+          if (!confirming.has(id)) settle(id, "cancelled");
+        },
         { once: true },
       );
       notify();
@@ -131,6 +165,10 @@ export function createShareRequests() {
       return () => void listeners.delete(listener);
     },
     settle,
+    /** The viewer chose Share: from now on only `settle` ends the request. */
+    confirm(id: string) {
+      if (pending.some((entry) => entry.id === id)) confirming.add(id);
+    },
   };
 }
 
@@ -138,6 +176,8 @@ export function createShareRequests() {
 export function createChatSharingService(
   ctx: Context,
   requests: ShareRequests,
+  /** A plugin's display name from its id. */
+  pluginName: (id: string) => string,
 ): ChatSharing {
   class ChatSharingService extends Service implements ChatSharing {
     constructor() {
@@ -148,12 +188,17 @@ export function createChatSharingService(
     requestShare(
       session: RelaySession,
       channelId: string,
-      options?: Readonly<{ signal?: AbortSignal | undefined }>,
+      options?: ShareRequestOptions,
     ) {
       const caller = this.ctx;
+      const owner = caller.pluginOwner?.id;
       return requests.request(
         session,
         channelId,
+        {
+          requester: owner ? pluginName(owner) : "The app",
+          reason: options?.reason,
+        },
         (end) => {
           const stop = caller.effect(() => end);
           return () => void stop();
