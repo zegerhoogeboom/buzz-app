@@ -1,0 +1,26 @@
+import { expect, it, vi } from "vitest";
+import type { ChannelSummary } from "../../features/relay/contracts";
+import type { RelaySession } from "../../features/relay/session";
+import { readyToLink } from "./linking";
+
+const session = (channels: Partial<ChannelSummary>[]) =>
+  ({ channels: { list: () => ({ channels }) } }) as unknown as RelaySession;
+
+it("asks the owner only before linking a Solo chat that isn't public", async () => {
+  const requestShare = vi.fn(async () => "cancelled" as const);
+  const sharing = { requestShare };
+  const relay = session([
+    { id: "solo", channelType: "solo", visibility: "private" },
+    { id: "shared", channelType: "solo", visibility: "public" },
+    { id: "unknown", channelType: "solo" },
+    { id: "channel", channelType: "stream", visibility: "private" },
+  ]);
+  expect(await readyToLink(relay, sharing, "channel")).toBe("shared");
+  expect(await readyToLink(relay, sharing, "shared")).toBe("shared");
+  expect(await readyToLink(relay, sharing, "elsewhere")).toBe("shared");
+  expect(requestShare).not.toHaveBeenCalled();
+  expect(await readyToLink(relay, sharing, "solo")).toBe("cancelled");
+  expect(await readyToLink(relay, sharing, "unknown")).toBe("cancelled");
+  expect(requestShare).toHaveBeenCalledTimes(2);
+  expect(await readyToLink(relay, undefined, "solo")).toBe("unavailable");
+});
