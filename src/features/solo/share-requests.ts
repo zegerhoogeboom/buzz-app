@@ -13,11 +13,12 @@ export type ChatSharing = Readonly<{
    * viewer confirms. Resolves `"shared"` once the chat is View only or public
    * (at once, without a dialog, when it already is), `"cancelled"` when the
    * viewer declines or the caller stops, and `"unavailable"` when the viewer
-   * cannot share it. Never rejects.
+   * cannot share it. Never rejects. Aborting `signal` withdraws the request.
    */
   requestShare(
     session: RelaySession,
     channelId: string,
+    options?: Readonly<{ signal?: AbortSignal | undefined }>,
   ): Promise<ChatShareOutcome>;
 }>;
 
@@ -68,7 +69,9 @@ export function createShareRequests() {
     session: RelaySession,
     channelId: string,
     lifetime?: (end: () => void) => () => void,
+    signal?: AbortSignal,
   ): Promise<ChatShareOutcome> {
+    if (signal?.aborted) return "cancelled";
     const same = pending.find(
       (entry) =>
         entry.session === session && entry.details.channelId === channelId,
@@ -76,6 +79,8 @@ export function createShareRequests() {
     if (same) return same.done;
     const controller = new AbortController();
     const stop = lifetime?.(() => controller.abort());
+    const withdraw = () => controller.abort();
+    signal?.addEventListener("abort", withdraw, { once: true });
     try {
       // The same check both share dialogs make: only the viewer's own Solo
       // chat, with its current signed access.
@@ -113,6 +118,7 @@ export function createShareRequests() {
       return await done;
     } finally {
       stop?.();
+      signal?.removeEventListener("abort", withdraw);
     }
   }
 
@@ -139,12 +145,21 @@ export function createChatSharingService(
     }
 
     // A method, so Cordis supplies the caller's context for its lifetime.
-    requestShare(session: RelaySession, channelId: string) {
+    requestShare(
+      session: RelaySession,
+      channelId: string,
+      options?: Readonly<{ signal?: AbortSignal | undefined }>,
+    ) {
       const caller = this.ctx;
-      return requests.request(session, channelId, (end) => {
-        const stop = caller.effect(() => end);
-        return () => void stop();
-      });
+      return requests.request(
+        session,
+        channelId,
+        (end) => {
+          const stop = caller.effect(() => end);
+          return () => void stop();
+        },
+        options?.signal,
+      );
     }
   }
   return new ChatSharingService();

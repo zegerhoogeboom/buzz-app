@@ -32,9 +32,11 @@ function ShareRequestConfirmation({
   const [error, setError] = useState("");
   // An uncertain save is checked on retry, never republished.
   const attempts = useRef(new Map<string, ChannelDetailsDraft>());
-  const controller = useRef(new AbortController());
+  // Made in the effect, so a remount (StrictMode) never keeps an aborted one.
+  const controller = useRef<AbortController>(undefined);
   useEffect(() => {
-    const active = controller.current;
+    const active = new AbortController();
+    controller.current = active;
     return () => active.abort();
   }, []);
   const decline = () => requests.settle(request.id, "cancelled");
@@ -42,7 +44,8 @@ function ShareRequestConfirmation({
     if (busy) return;
     setBusy(true);
     setError("");
-    const { signal } = controller.current;
+    const signal = controller.current?.signal;
+    if (!signal || signal.aborted) return;
     try {
       await shareSoloChatAccess(request.session, request.details.channelId, {
         signal,
@@ -60,10 +63,14 @@ function ShareRequestConfirmation({
   };
   return (
     <AlertDialog
-      title="Share this chat?"
+      title={
+        request.details.name
+          ? `Share “${request.details.name}”?`
+          : "Share this chat?"
+      }
       description={
         <>
-          This changes the chat from Private to View only.{" "}
+          A plugin asked to change this chat from Private to View only.{" "}
           <span className="mt-3 block">{soloShareDisclosure()}</span>
         </>
       }

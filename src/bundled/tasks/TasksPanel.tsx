@@ -44,7 +44,7 @@ export function TasksPanel({
 } & Pick<TaskViewProps, "readyToLink" | "openConversation">) {
   const state = useTasksWithSaved(session, channel);
   const notify = useToastNotification();
-  // "new" carries the links a new task starts with, cleared to link.
+  // A new task carries the links it starts with; consent waits for Create.
   const [open, setOpen] = useState<string | { newLinks: string[] }>();
   const [linking, setLinking] = useState(false);
   const linked = state.tasks
@@ -119,9 +119,7 @@ export function TasksPanel({
           size="sm"
           variant="prominent"
           disabled={linking}
-          onClick={async () => {
-            if (await cleared()) setOpen({ newLinks: [chat] });
-          }}
+          onClick={() => setOpen({ newLinks: [chat] })}
         >
           <PlusIcon size={16} aria-hidden="true" />
           New task from this chat

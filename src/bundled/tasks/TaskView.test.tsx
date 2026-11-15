@@ -121,9 +121,36 @@ it("links the current chat only once it may be linked", async () => {
   );
   const link = screen.getByRole("button", { name: "Link this chat" });
   fireEvent.click(link);
-  await vi.waitFor(() => expect(readyToLink).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(link).toBeEnabled());
+  expect(readyToLink).toHaveBeenCalledTimes(1);
   expect(signed).toHaveLength(0);
   fireEvent.click(link);
   await vi.waitFor(() => expect(onSaved).toHaveBeenCalled());
   expect(onSaved.mock.calls[0]?.[0].links).toEqual([chat]);
+});
+
+it("asks to share a new task's chat only at Create, and saves nothing if declined", async () => {
+  const { session, signed } = setup(async () => "");
+  const readyToLink = vi.fn(async () => "cancelled" as const);
+  render(
+    <TaskView
+      session={session}
+      channel="tasks"
+      task={undefined}
+      newLinks={[chat]}
+      readyToLink={readyToLink}
+      openConversation={() => {}}
+      onSaved={() => {}}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Title"), {
+    target: { value: "From this chat" },
+  });
+  expect(readyToLink).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This chat wasn’t shared, so the task wasn’t saved.",
+  );
+  expect(readyToLink).toHaveBeenCalledWith(chat);
+  expect(signed).toHaveLength(0);
 });

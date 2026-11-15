@@ -12,6 +12,7 @@ export async function readyToLink(
   session: RelaySession,
   sharing: ChatSharing | undefined,
   channelId: string,
+  signal?: AbortSignal,
 ): Promise<ChatShareOutcome> {
   const channel = session.channels
     .list()
@@ -19,5 +20,7 @@ export async function readyToLink(
   // Unknown visibility is not public: ask, and let the app's check decide.
   if (channel?.channelType !== "solo" || channel.visibility === "public")
     return "shared";
-  return sharing ? sharing.requestShare(session, channelId) : "unavailable";
+  return sharing
+    ? sharing.requestShare(session, channelId, { signal })
+    : "unavailable";
 }

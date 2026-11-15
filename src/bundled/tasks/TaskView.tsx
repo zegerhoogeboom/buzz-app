@@ -1,4 +1,4 @@
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { RelaySession } from "../../features/relay/session";
 import { useChannelReference } from "../../features/conversation/channel-reference";
 import { DOCUMENT_PROFILE } from "../../features/markdown/document-profile";
@@ -47,6 +47,19 @@ const empty: TaskFields = {
   images: [],
   links: [],
 };
+/** An open edit: the text, the revision it builds on, and the task's id. */
+export type TaskDraft = Readonly<{
+  fields: TaskFields;
+  base: Task | undefined;
+  id: string;
+}>;
+
+/** A save, or why it stopped before writing: a link the owner didn't share. */
+type ViewSave =
+  | Awaited<ReturnType<typeof saveTask>>
+  | Readonly<{ status: "declined"; outcome: "cancelled" | "unavailable" }>;
+const declined = "Only this chat’s owner can link it to a task.";
+
 const fieldsOf = (task: Task): TaskFields => ({
   title: task.title,
   description: task.description,
@@ -70,6 +83,9 @@ export type TaskViewProps = {
   onSaved(task: Task): void;
   /** Conversations a new task starts linked to, already cleared to link. */
   newLinks?: readonly string[] | undefined;
+  /** Unsaved edits the list keeps while another task is open. */
+  draft?: TaskDraft | undefined;
+  onDraftChange?: ((draft: TaskDraft | undefined) => void) | undefined;
   /** Leaves a new task without saving it. */
   onDiscard?: (() => void) | undefined;
 };
@@ -79,12 +95,31 @@ export type TaskViewProps = {
 export function TaskView(props: TaskViewProps) {
   const { session, channel, task } = props;
   const notify = useToastNotification();
-  const [editing, setEditing] = useState(!task);
+  const [editing, setEditing] = useState(!task || !!props.draft);
   const [saving, setSaving] = useState(false);
-  const save = async (fields: TaskFields, base: Task | undefined) => {
+  // Consent is asked only as a link is saved, so declining or discarding
+  // never leaves a chat shared with nothing linked to it.
+  const save = async (
+    fields: TaskFields,
+    base: Task | undefined,
+    id?: string,
+  ): Promise<ViewSave> => {
     setSaving(true);
     try {
-      const result = await saveTask(session, channel, fields, base);
+      for (const added of fields.links.filter(
+        (link) => !base?.links.includes(link),
+      )) {
+        const outcome = await props.readyToLink(added);
+        if (outcome !== "shared") return { status: "declined", outcome };
+      }
+      const result = await saveTask(
+        session,
+        channel,
+        fields,
+        base,
+        undefined,
+        id,
+      );
       if (result.status === "saved") props.onSaved(result.task);
       return result;
     } finally {
@@ -97,7 +132,9 @@ export function TaskView(props: TaskViewProps) {
     try {
       const result = await save({ ...fieldsOf(task), ...next }, task);
       if (result.status === "saved") return true;
-      notify("Someone else changed this task. Try again.", "error");
+      if (result.status === "conflict")
+        notify("Someone else changed this task. Try again.", "error");
+      else if (result.outcome === "unavailable") notify(declined, "error");
     } catch (reason) {
       notify(
         reason instanceof Error ? reason.message : "Couldn’t save the task.",
@@ -113,18 +150,14 @@ export function TaskView(props: TaskViewProps) {
         saving={saving}
         save={save}
         onDone={(saved) => {
+          props.onDraftChange?.(undefined);
           setEditing(false);
           if (!saved && !task) props.onDiscard?.();
         }}
       />
     );
-  const link = async (channelId: string) => {
-    const outcome = await props.readyToLink(channelId);
-    if (outcome === "shared")
-      await change({ links: [...task.links, channelId] });
-    else if (outcome === "unavailable")
-      notify("Only this chat’s owner can link it to a task.", "error");
-  };
+  const link = (channelId: string) =>
+    change({ links: [...task.links, channelId] });
   const unlink = async (channelId: string) => {
     const solo =
       session.channels.list().channels.find((item) => item.id === channelId)
@@ -336,21 +369,35 @@ function TaskEditor({
   session,
   task,
   newLinks,
+  draft: kept,
+  onDraftChange,
   saving,
   save,
   onDone,
 }: TaskViewProps & {
   saving: boolean;
-  save(fields: TaskFields, base: Task | undefined): ReturnType<typeof saveTask>;
+  save(
+    fields: TaskFields,
+    base: Task | undefined,
+    id?: string,
+  ): Promise<ViewSave>;
   onDone(saved: boolean): void;
 }) {
-  const id = useId();
+  const inputId = useId();
   const [draft, setDraft] = useState<TaskFields>(
-    task ? fieldsOf(task) : { ...empty, links: newLinks ?? [] },
+    kept?.fields ??
+      (task ? fieldsOf(task) : { ...empty, links: newLinks ?? [] }),
   );
   // The revision this draft builds on; a conflict moves it to theirs.
-  const [base, setBase] = useState(task);
-  const [conflict, setConflict] = useState<{ theirs?: Task | undefined }>();
+  const [base, setBase] = useState(kept ? kept.base : task);
+  // One id for a new task across retries, so a create that landed unseen
+  // is found rather than made twice.
+  const [taskId] = useState(() => kept?.id ?? task?.id ?? crypto.randomUUID());
+  useEffect(
+    () => onDraftChange?.({ fields: draft, base, id: taskId }),
+    [draft, base, taskId, onDraftChange],
+  );
+  const [conflict, setConflict] = useState<{ theirs: Task }>();
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
   const files = useRef<HTMLInputElement>(null);
@@ -359,12 +406,18 @@ function TaskEditor({
   const submit = async () => {
     setError("");
     try {
-      const result = await save(draft, base);
+      const result = await save(draft, base, taskId);
       if (result.status === "saved") onDone(true);
+      else if (result.status === "declined")
+        setError(
+          result.outcome === "unavailable"
+            ? declined
+            : "This chat wasn’t shared, so the task wasn’t saved.",
+        );
       else {
         // Keep the person's text; the next Save is a deliberate overwrite.
         setConflict({ theirs: result.current });
-        if (result.current) setBase(result.current);
+        setBase(result.current);
       }
     } catch (reason) {
       setError(
@@ -430,17 +483,15 @@ function TaskEditor({
             Someone else changed this task. Your text is kept. Saving now
             replaces their version.
           </p>
-          {conflict.theirs ? (
-            <Button
-              size="sm"
-              onClick={() => {
-                if (conflict.theirs) setDraft(fieldsOf(conflict.theirs));
-                setConflict(undefined);
-              }}
-            >
-              Show their version
-            </Button>
-          ) : null}
+          <Button
+            size="sm"
+            onClick={() => {
+              setDraft(fieldsOf(conflict.theirs));
+              setConflict(undefined);
+            }}
+          >
+            Show their version
+          </Button>
         </div>
       ) : null}
       <Field label="Title">
@@ -474,7 +525,7 @@ function TaskEditor({
       )}
       <input
         ref={files}
-        id={`${id}-files`}
+        id={`${inputId}-files`}
         type="file"
         accept="image/*"
         multiple

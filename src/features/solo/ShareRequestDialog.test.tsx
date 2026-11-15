@@ -2,6 +2,7 @@
 import { Context } from "@deepseek-ai/cordis";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RelaySession } from "../relay/session";
 import type {
@@ -69,7 +70,7 @@ it("shows the app's confirmation and makes the chat View only only when confirme
   const requests = createShareRequests();
   render(<ShareRequestDialog requests={requests} />);
   const outcome = requests.request(f.session, id);
-  expect(await screen.findByText("Share this chat?")).toBeTruthy();
+  expect(await screen.findByText("Share “Chat”?")).toBeTruthy();
   expect(
     screen.getByText(
       /full history, Canvas, workspace folders, and agent instructions/,
@@ -84,7 +85,7 @@ it("shows the app's confirmation and makes the chat View only only when confirme
     expect.any(AbortSignal),
     expect.any(Function),
   );
-  expect(screen.queryByText("Share this chat?")).toBeNull();
+  expect(screen.queryByText("Share “Chat”?")).toBeNull();
 });
 
 it("changes nothing when the viewer cancels", async () => {
@@ -118,7 +119,7 @@ it("resolves without a dialog when the chat is already open", async () => {
   render(<ShareRequestDialog requests={requests} />);
   expect(await requests.request(f.session, id)).toBe("shared");
   expect(requests.snapshot()).toEqual([]);
-  expect(screen.queryByText("Share this chat?")).toBeNull();
+  expect(screen.queryByText("Share “Chat”?")).toBeNull();
 });
 
 it("refuses without a dialog for a chat the viewer does not own", async () => {
@@ -134,7 +135,7 @@ it("asks once for repeated requests about the same chat", async () => {
   const requests = createShareRequests();
   render(<ShareRequestDialog requests={requests} />);
   const first = requests.request(f.session, id);
-  await screen.findByText("Share this chat?");
+  await screen.findByText("Share “Chat”?");
   const second = requests.request(f.session, id);
   expect(requests.snapshot()).toHaveLength(1);
   await userEvent.click(screen.getByRole("button", { name: "Share" }));
@@ -158,11 +159,38 @@ it("withdraws a plugin's request when the plugin stops", async () => {
   render(<ShareRequestDialog requests={requests} />);
   if (!sharing) throw new Error("chatSharing is unavailable");
   const outcome = sharing.requestShare(f.session, id);
-  await screen.findByText("Share this chat?");
+  await screen.findByText("Share “Chat”?");
   await act(async () => {
     await fiber.dispose();
   });
   expect(await outcome).toBe("cancelled");
-  expect(screen.queryByText("Share this chat?")).toBeNull();
+  expect(screen.queryByText("Share “Chat”?")).toBeNull();
   expect(f.save).not.toHaveBeenCalled();
+});
+
+it("withdraws a request when its caller's signal aborts", async () => {
+  const f = fixture();
+  const requests = createShareRequests();
+  render(<ShareRequestDialog requests={requests} />);
+  const controller = new AbortController();
+  const outcome = requests.request(f.session, id, undefined, controller.signal);
+  await screen.findByText("Share “Chat”?");
+  act(() => controller.abort());
+  expect(await outcome).toBe("cancelled");
+  expect(screen.queryByText("Share “Chat”?")).toBeNull();
+  expect(f.save).not.toHaveBeenCalled();
+});
+
+it("still shares after a StrictMode remount", async () => {
+  const f = fixture();
+  const requests = createShareRequests();
+  render(
+    <StrictMode>
+      <ShareRequestDialog requests={requests} />
+    </StrictMode>,
+  );
+  const outcome = requests.request(f.session, id);
+  await userEvent.click(await screen.findByRole("button", { name: "Share" }));
+  expect(await outcome).toBe("shared");
+  expect(f.save).toHaveBeenCalledOnce();
 });

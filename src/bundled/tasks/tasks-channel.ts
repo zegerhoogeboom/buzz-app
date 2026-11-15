@@ -46,17 +46,23 @@ const isTasksChannel = (channel: ChannelSummary, admins: Set<string>) =>
   admins.has(channel.creator) &&
   !!channel.labels?.includes(TASKS_LABEL);
 
+// Once found, a community's tasks channel stays put for that connection, so
+// each panel and tool call doesn't read the roster and every admin again.
+const found = new WeakMap<RelaySession, string>();
+
 /** Finds the community's tasks channel. Throws when it can't tell. */
 export async function findTasksChannel(
   session: RelaySession,
   signal: AbortSignal,
 ): Promise<TasksChannel> {
+  const known = found.get(session);
+  if (known) return { status: "found", channelId: known };
   const findLabeled = session.channels.findLabeled;
   if (!findLabeled)
     throw new Error("Tasks aren’t available in this community.");
   const admins = await readAdmins(session, signal);
   const trusted = new Set(admins);
-  const found = (
+  const oldest = (
     await Promise.all(
       admins.map((creator) =>
         findLabeled(
@@ -69,7 +75,10 @@ export async function findTasksChannel(
     .flat()
     .filter((channel) => isTasksChannel(channel, trusted))
     .sort(compareChannelAge)[0];
-  if (found) return { status: "found", channelId: found.id };
+  if (oldest) {
+    found.set(session, oldest.id);
+    return { status: "found", channelId: oldest.id };
+  }
   return {
     status: "missing",
     canSetUp: !!session.viewer && trusted.has(session.viewer),

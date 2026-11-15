@@ -405,6 +405,31 @@ an animated GIF or WebP loses its animation; offer the whole image for those.
 The host fetches the authenticated media and runs Vision's foreground instance
 mask (`media_lift_subject`); the plugin never receives media credentials.
 
+### Asking to share a Solo chat
+
+A plugin that links or shows a viewer's private Solo chat to others asks the
+host to make it View only. Read the optional `chatSharing` service with
+`ctx.reflect.get("chatSharing")`; it is `undefined` on older hosts.
+
+```ts
+type ChatSharing = {
+  requestShare(
+    session: RelaySession,
+    channelId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<"shared" | "cancelled" | "unavailable">;
+};
+```
+
+The host shows its own "Share this chat?" confirmation with the chat's name and
+the View only disclosure; nothing changes unless the viewer confirms. Only the
+viewer's own Solo chat can be shared (`"unavailable"` otherwise), and one
+already View only or public resolves `"shared"` with no dialog. Aborting
+`signal`, or the plugin stopping, withdraws the request as `"cancelled"`. Agent
+tools that link chats call it too, so an agent can't skip the confirmation. Ask
+only as the change that needs it is saved, so declining never leaves a chat
+shared for nothing.
+
 ### Plugin installer
 
 A plugin, such as a catalog or marketplace page, may ask the host to review a plugin

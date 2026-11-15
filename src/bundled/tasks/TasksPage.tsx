@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Navigation } from "../../features/navigation/controller";
 import type { NavigationScope } from "../../features/navigation/targets";
 import type { PageProps } from "../../features/pages/service";
@@ -39,7 +39,7 @@ import { filterTasks, type TaskFilter } from "./model";
 import { useTasksWithSaved } from "./react";
 import { StatusIcon } from "./StatusIcon";
 import { TasksGate } from "./TasksGate";
-import { TaskView } from "./TaskView";
+import { type TaskDraft, TaskView } from "./TaskView";
 import styles from "./Tasks.module.css";
 
 type TasksPageProps = Pick<PageProps, "navigation"> & {
@@ -180,6 +180,16 @@ function TaskBoard({
       : state.tasks.find((item) => item.id === selected);
   const detail = selected === "new" || task !== undefined;
   const back = useCallback(() => setSelected(undefined), []);
+  // Unsaved edits survive opening another task (DESIGN.md master/detail).
+  const drafts = useRef(new Map<string, TaskDraft>());
+  const onDraftChange = useCallback(
+    (draft: TaskDraft | undefined) => {
+      if (!selected) return;
+      if (draft) drafts.current.set(selected, draft);
+      else drafts.current.delete(selected);
+    },
+    [selected],
+  );
   return (
     <div className={styles.board} data-detail={detail || undefined}>
       <section className={styles.list} aria-label="Task list">
@@ -316,6 +326,8 @@ function TaskBoard({
             task={task}
             readyToLink={readyToLink}
             openConversation={openConversation}
+            draft={selected ? drafts.current.get(selected) : undefined}
+            onDraftChange={onDraftChange}
             onSaved={(next) => {
               state.setSaved(next);
               setSelected(next.id);

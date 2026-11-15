@@ -92,3 +92,29 @@ it("confirms an uncertain save from the head, else says it failed", async () => 
     saveTask(refused.session, "tasks", fields, base),
   ).rejects.toThrow("You can’t edit tasks in this community.");
 });
+
+it("finds a create that landed unseen instead of making a second task", async () => {
+  const { session: relay, sign } = session(async () => {
+    throw new Error("socket closed");
+  }, [
+    {
+      ...head("f".repeat(64), {}),
+      tags: [
+        ["d", "chosen"],
+        ["type", TASK_TYPE],
+        ["title", "Fix the header"],
+      ],
+    },
+  ]);
+  const result = await saveTask(
+    relay,
+    "tasks",
+    fields,
+    undefined,
+    undefined,
+    "chosen",
+  );
+  expect(result.status).toBe("saved");
+  const template = sign.mock.calls[0]?.[0] as unknown as { tags: string[][] };
+  expect(template.tags).toContainEqual(["d", "chosen"]);
+});

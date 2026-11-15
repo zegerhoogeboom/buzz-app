@@ -1,4 +1,5 @@
 .page {
+  container: tasks-page / inline-size;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -16,7 +17,6 @@
 
 /* List beside the open task; a narrow pane shows one at a time. */
 .board {
-  container: tasks-board / inline-size;
   flex: 1;
   min-height: 0;
   display: grid;
@@ -41,7 +41,7 @@
 .back {
   display: none;
 }
-@container tasks-board (max-width: 40rem) {
+@container tasks-page (max-width: 40rem) {
   .board[data-detail] {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -10,6 +10,7 @@ import type { RelaySession } from "../../features/relay/session";
 import type { ChatSharing } from "../../features/solo/share-requests";
 import { readyToLink } from "./linking";
 import {
+  checkedFields,
   imageOf,
   isChannelId,
   isOpenStatus,
@@ -129,8 +130,13 @@ export function addTaskTools(
     throw new Error("Others keep changing this task. Try again.");
   }
 
-  async function cleared(session: RelaySession, chat: string) {
-    const outcome = await readyToLink(session, sharing(), chat);
+  async function cleared(
+    session: RelaySession,
+    chat: string,
+    signal: AbortSignal,
+  ) {
+    const outcome = await readyToLink(session, sharing(), chat, signal);
+    signal.throwIfAborted();
     if (outcome === "cancelled")
       throw new Error(
         "Your owner chose not to share this chat, so it wasn't linked.",
@@ -165,22 +171,21 @@ export function addTaskTools(
       additionalProperties: false,
     },
     async call(client, context, args) {
-      const title = textArg(args, "title") ?? "";
-      const images = imagesArg(args) ?? [];
-      const { session, channel, signal } = await open(client);
       const chat = args.link === false ? undefined : context.channel;
-      if (chat) await cleared(session, chat);
-      signal.throwIfAborted();
+      // Checked before the owner is asked, so a bad call never shares a chat.
+      const fields = checkedFields({
+        title: textArg(args, "title") ?? "",
+        description: textArg(args, "description") ?? "",
+        status: "open",
+        images: imagesArg(args) ?? [],
+        links: chat ? [chat] : [],
+      });
+      const { session, channel, signal } = await open(client);
+      if (chat) await cleared(session, chat, signal);
       const result = await saveTask(
         session,
         channel,
-        {
-          title,
-          description: textArg(args, "description") ?? "",
-          status: "open",
-          images,
-          links: chat ? [chat] : [],
-        },
+        fields,
         undefined,
         signal,
       );
@@ -328,7 +333,11 @@ export function addTaskTools(
       if (!isChannelId(chat)) throw new Error("channel must be a channel id");
       const unlink = args.unlink === true;
       const { session, channel, signal } = await open(client);
-      if (!unlink) await cleared(session, chat);
+      if (!unlink) {
+        // The task must exist before the owner is asked to share for it.
+        await current(session, channel, id, signal);
+        await cleared(session, chat, signal);
+      }
       const task = await change(
         session,
         channel,

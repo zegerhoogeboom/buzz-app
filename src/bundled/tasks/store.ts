@@ -124,16 +124,19 @@ export function watchTasks(session: RelaySession, channel: string): TasksView {
 
 export type SaveResult =
   | Readonly<{ status: "saved"; task: Task }>
-  /** Someone else saved first; `current` is their version when readable. */
-  | Readonly<{ status: "conflict"; current?: Task | undefined }>;
+  /** Someone else saved first; `current` is their version, the next base. */
+  | Readonly<{ status: "conflict"; current: Task }>;
 
-/** Creates a task (no `base`) or saves `fields` over the `base` revision. */
+/** Creates task `id` (no `base`) or saves `fields` over the `base` revision.
+ * A new task's caller keeps one `id` across retries, so a create that landed
+ * unseen is found, not made twice. */
 export async function saveTask(
   session: RelaySession,
   channel: string,
   fields: TaskFields,
   base: Task | undefined,
   signal: AbortSignal = AbortSignal.timeout(20_000),
+  id: string = base?.id ?? crypto.randomUUID(),
 ): Promise<SaveResult> {
   const read = session.snapshotRead;
   const writer = session.configArtifactWriter;
@@ -148,7 +151,7 @@ export async function saveTask(
       content: taskContent(checked, base?.author ?? viewer),
       tags: [
         ["ar", "1"],
-        ["d", base?.id ?? crypto.randomUUID()],
+        ["d", id],
         ["h", channel],
         ["type", TASK_TYPE],
         ["title", checked.title],
@@ -164,20 +167,21 @@ export async function saveTask(
     if (!task) throw new Error("Couldn’t read the saved task.");
     return { status: "saved", task };
   }
-  if (delivery.status === "refused" && delivery.refusal === "conflict") {
-    const head = base
-      ? await readHead(read, channel, base.id, signal).catch(() => undefined)
-      : undefined;
-    return { status: "conflict", current: head && taskOf(head) };
-  }
-  if (delivery.status === "uncertain" && base) {
-    // The relay accepts a replay of an accepted revision, so the head shows
-    // whether this one landed.
-    const head = await readHead(read, channel, base.id, signal).catch(
+  if (
+    (delivery.status === "refused" && delivery.refusal === "conflict") ||
+    delivery.status === "uncertain"
+  ) {
+    // The head shows whether this revision landed, or whose did instead.
+    const head = await readHead(read, channel, id, signal).catch(
       () => undefined,
     );
-    const task = head?.id === event.id ? taskOf(head) : undefined;
-    if (task) return { status: "saved", task };
+    const current = head && taskOf(head);
+    if (current?.revision === event.id)
+      return { status: "saved", task: current };
+    if (delivery.status === "refused" && current)
+      return { status: "conflict", current };
+    if (delivery.status === "refused")
+      throw new Error("Someone else changed this task. Try again.");
   }
   throw new Error(
     delivery.status === "refused" && delivery.refusal === "permission"

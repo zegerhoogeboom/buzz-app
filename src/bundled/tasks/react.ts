@@ -33,17 +33,30 @@ export function useTasks(session: RelaySession, channel: string) {
   return useSyncExternalStore(view.subscribe, view.snapshot, view.snapshot);
 }
 
-/** Tasks from the live view, with this device's last save shown until the
- * relay's copy catches up with it. */
+/** Tasks from the live view, with this device's saves shown until the
+ * relay's copy has them: the same revision, or a strictly newer one. A tie
+ * keeps the save, the newest this device knows of. */
 export function useTasksWithSaved(session: RelaySession, channel: string) {
   const state = useTasks(session, channel);
-  const [saved, setSaved] = useState<Task>();
+  const [saved, setSavedMap] = useState<ReadonlyMap<string, Task>>(new Map());
+  const setSaved = useCallback(
+    (task: Task) =>
+      setSavedMap((current) => new Map(current).set(task.id, task)),
+    [],
+  );
   const tasks = useMemo(() => {
-    if (!saved) return state.tasks;
-    const live = state.tasks.find((task) => task.id === saved.id);
-    return live && live.updatedAt >= saved.updatedAt
-      ? state.tasks
-      : [...state.tasks.filter((task) => task.id !== saved.id), saved];
+    if (!saved.size) return state.tasks;
+    const live = new Map(state.tasks.map((task) => [task.id, task]));
+    for (const task of saved.values()) {
+      const current = live.get(task.id);
+      if (
+        !current ||
+        (current.revision !== task.revision &&
+          current.updatedAt <= task.updatedAt)
+      )
+        live.set(task.id, task);
+    }
+    return [...live.values()];
   }, [state.tasks, saved]);
   return { ...state, tasks, setSaved };
 }
