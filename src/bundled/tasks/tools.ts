@@ -23,7 +23,7 @@ import {
   taskOf,
 } from "./model";
 import { saveTask } from "./store";
-import { findTasksChannel } from "./tasks-channel";
+import { openTasksChannel } from "./tasks-channel";
 
 type Agents = Pick<AgentsService, "addTool" | "relay">;
 type Args = Record<string, unknown>;
@@ -88,14 +88,8 @@ export function addTaskTools(
     if (relay?.status !== "ready")
       throw new Error("Tasks need this conversation's community");
     const signal = client.signal ?? AbortSignal.timeout(60_000);
-    const found = await findTasksChannel(relay.session, signal);
-    if (found.status !== "found")
-      throw new Error(
-        found.canSetUp
-          ? "Tasks isn't set up in this community. Ask your owner to open Tasks and set it up."
-          : "Tasks isn't set up in this community. A community admin needs to set it up.",
-      );
-    return { session: relay.session, channel: found.channelId, signal };
+    const channel = await openTasksChannel(relay.session, signal);
+    return { session: relay.session, channel, signal };
   }
 
   async function current(

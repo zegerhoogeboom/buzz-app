@@ -4,9 +4,8 @@ A task holds the context for a piece of work and links the conversations about i
 
 ## Getting started
 
-1. A community admin opens **Tasks** once and chooses **Set up Tasks**.
-2. Choose **New task**, give it a title and a description, and add images if they help.
-3. In a chat or channel, choose **Tasks** in its header to see the tasks linked there, make one from the chat, or link the chat to an existing task.
+1. Open **Tasks** and choose **New task**, give it a title and a description, and add images if they help.
+2. In a chat or channel, choose **Tasks** in its header to see the tasks linked there, make one from the chat, or link the chat to an existing task.
 
 You can also ask your agent to make a task from a conversation.
 

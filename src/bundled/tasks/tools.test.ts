@@ -5,7 +5,7 @@ import { TASK_TYPE } from "./model";
 import { addTaskTools } from "./tools";
 
 vi.mock("./tasks-channel", () => ({
-  findTasksChannel: async () => ({ status: "found", channelId: "tasks" }),
+  openTasksChannel: async () => "tasks",
 }));
 
 const viewer = "a".repeat(64);
