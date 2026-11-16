@@ -433,6 +433,15 @@
     width: var(--anchor-width);
     overflow-wrap: anywhere;
   }
+  /* A combobox menu can open from a trigger narrower than its choices, such as
+     a compact avatar trigger. Keep the compact Select's minimum so names never
+     break mid-word. */
+  .buzz-select-popup[data-combobox-size] {
+    min-width: min(
+      max(var(--anchor-width), 11.25rem),
+      calc(100vw - var(--space-6))
+    );
+  }
   /* Roughly four avatar-and-detail rows plus search. The viewport may make
      the list shorter; keep search fixed and every result scrollable. */
   .buzz-select-popup[data-combobox-size="compact"] {
