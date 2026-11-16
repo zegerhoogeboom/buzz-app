@@ -205,13 +205,13 @@ export type SaveTarget =
   | Readonly<{ op: "update"; base: Task }>
   | Readonly<{ op: "move"; base: Task; home: string }>;
 
+export const NOT_A_TASK_PLACE =
+  "A task can live in a project, channel or chat that isn’t archived, never a DM or a huddle. Nothing was saved.";
+
 /** Saves one revision, signed by the session's viewer. A new task's caller
  * keeps one `id` across retries, so a create that landed unseen is found, not
  * made twice. Whatever the save reads back, to see whose revision won, comes
  * through `reader` alone: an agent's tool passes the agent's own reads. */
-export const NOT_A_TASK_PLACE =
-  "A task can live in a project, channel or chat that isn’t archived, never a DM or a huddle. Nothing was saved.";
-
 export async function saveTask(
   session: RelaySession,
   reader: TaskSource,
