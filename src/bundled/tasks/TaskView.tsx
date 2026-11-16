@@ -29,6 +29,7 @@ import {
 import { AlertDialog } from "../../shared/design-system/ui/AlertDialog";
 import { AvatarStack } from "../../shared/design-system/ui/AvatarStack";
 import { Button } from "../../shared/design-system/ui/Button";
+import { TaskComments, type TaskCommentsProps } from "./TaskComments";
 import { Combobox } from "../../shared/design-system/ui/Combobox";
 import { Field } from "../../shared/design-system/ui/Field";
 import { InlineHeader } from "../../shared/design-system/ui/Header";
@@ -89,6 +90,9 @@ export type TaskViewProps = {
   task: Task | undefined;
   /** Where a new task starts. */
   home?: string | undefined;
+  /** Where task comments show: the connection's scope and the plugin's
+   * conversation services. Absent, the view shows no comments. */
+  comments?: Pick<TaskCommentsProps, "scope" | "host"> | undefined;
   /** The conversation this view sits beside, which "Link this chat" links. */
   currentChat?: string | undefined;
   openConversation(channelId: string): void;
@@ -133,6 +137,7 @@ function TaskDetails({
   openConversation,
   onSaved,
   edit,
+  comments,
 }: TaskViewProps & { task: Task; edit(): void }) {
   const notify = useToastNotification();
   const canEdit = useCanEdit(session, task.home);
@@ -245,9 +250,9 @@ function TaskDetails({
       />
       <section className={styles.section} aria-labelledby={`${task.id}-talk`}>
         <InlineHeader id={`${task.id}-talk`} title="Comments" />
-        {canEdit ? null : (
-          <p className="text-body-sm text-subtle m-0">Read-only access</p>
-        )}
+        {comments ? (
+          <TaskComments session={session} task={task} {...comments} />
+        ) : null}
       </section>
       {moving ? (
         <MoveTask

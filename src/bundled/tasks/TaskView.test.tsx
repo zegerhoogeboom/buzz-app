@@ -113,7 +113,6 @@ it("shows a guest the task with no edit controls", () => {
       onSaved={() => {}}
     />,
   );
-  expect(screen.getByText("Read-only access")).toBeInTheDocument();
   for (const name of ["Edit", "Move…"])
     expect(screen.queryByRole("button", { name })).toBeNull();
   expect(screen.queryByLabelText("Status")).toBeNull();

@@ -28,15 +28,22 @@ import { usePlaces, useTasksWithSaved } from "./react";
 import { taskRoute } from "./route";
 import { holdsWords } from "./similar";
 import { StatusIcon } from "./StatusIcon";
-import { type TaskDraft, TaskView } from "./TaskView";
+import { type TaskDraft, TaskView, type TaskViewProps } from "./TaskView";
+import type { ConversationHostServices } from "../../features/conversation/ConversationHost";
 import styles from "./Tasks.module.css";
 
 type TasksPageProps = Pick<PageProps, "navigation"> & {
   relay: RelayData;
   navigator: Navigation;
+  host: ConversationHostServices;
 };
 
-export function TasksPage({ relay, navigation, navigator }: TasksPageProps) {
+export function TasksPage({
+  relay,
+  navigation,
+  navigator,
+  host,
+}: TasksPageProps) {
   const connection = useRelayConnection(relay);
   const request = useMemo(
     () => navigation?.forSession(relay, connection),
@@ -86,6 +93,9 @@ export function TasksPage({ relay, navigation, navigator }: TasksPageProps) {
             key={`${connection.scope}:${connection.generation}`}
             session={connection.session}
             opened={opened}
+            comments={
+              connection.scope ? { scope: connection.scope, host } : undefined
+            }
             openConversation={(channelId) =>
               void navigator.open({
                 version: 1,
@@ -179,11 +189,12 @@ function TaskBoard({
   session,
   opened,
   openConversation,
+  comments,
 }: {
   session: RelaySession;
   opened: string | undefined;
   openConversation(channelId: string): void;
-}) {
+} & Pick<TaskViewProps, "comments">) {
   const state = useTasksWithSaved(session);
   const places = usePlaces(
     session,
@@ -388,6 +399,7 @@ function TaskBoard({
                   : undefined
               }
               openConversation={openConversation}
+              comments={comments}
               draft={selected ? drafts.current.get(selected) : undefined}
               onDraftChange={onDraftChange}
               onSaved={(next) => {

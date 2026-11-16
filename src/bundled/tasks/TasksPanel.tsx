@@ -34,11 +34,12 @@ export function TasksPanel({
   session,
   chat,
   openConversation,
+  comments,
 }: {
   session: RelaySession;
   /** The conversation this panel sits beside. */
   chat: string;
-} & Pick<TaskViewProps, "openConversation">) {
+} & Pick<TaskViewProps, "openConversation" | "comments">) {
   const state = useTasksWithSaved(session);
   const notify = useToastNotification();
   const [open, setOpen] = useState<string>();
@@ -111,6 +112,7 @@ export function TasksPanel({
           home={chat}
           currentChat={chat}
           openConversation={openConversation}
+          comments={comments}
           onSaved={(next) => {
             state.setSaved(next);
             setOpen(next.id);

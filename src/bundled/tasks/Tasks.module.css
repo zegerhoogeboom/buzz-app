@@ -137,3 +137,19 @@
   max-width: 20rem;
   overflow-wrap: anywhere;
 }
+
+/* A task's comments: the timeline scrolls inside a bounded height, with its
+   composer below. */
+.comments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.commentList {
+  display: flex;
+  flex-direction: column;
+  block-size: 24rem;
+  max-block-size: 60vh;
+  min-block-size: 0;
+}

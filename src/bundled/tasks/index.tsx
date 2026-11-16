@@ -33,6 +33,12 @@ const scopeOf = (state: RelaySnapshot) =>
 
 export const apply: PluginModule["apply"] = (ctx) => {
   let active = true;
+  // Comments open panels and links the way any conversation does.
+  const host = {
+    panels: ctx.panels,
+    relay: ctx.relay,
+    navigation: ctx.navigation,
+  };
   ctx.effect(() => () => {
     active = false;
   });
@@ -45,7 +51,12 @@ export const apply: PluginModule["apply"] = (ctx) => {
     placement: "dock",
     route: { version: 1, validate: (params) => !!taskRoute(params) },
     component: (props) => (
-      <TasksPage {...props} relay={ctx.relay} navigator={ctx.navigation} />
+      <TasksPage
+        {...props}
+        relay={ctx.relay}
+        navigator={ctx.navigation}
+        host={host}
+      />
     ),
   });
 
@@ -96,6 +107,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
         key={`${state.scope}:${state.generation}:${channelContext.channelId}`}
         session={state.session}
         chat={channelContext.channelId}
+        comments={{ scope: state.scope, host }}
         openConversation={(channelId) =>
           void ctx.navigation.open({
             version: 1,
