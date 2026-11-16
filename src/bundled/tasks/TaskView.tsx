@@ -262,9 +262,6 @@ function TaskDetails({
               <StatusIcon status={task.status} /> {statusLabels[task.status]}
             </span>
             <Assignees session={session} assignees={task.assignees} />
-            {access === "view" ? (
-              <span className="text-body-sm text-subtle">Read-only access</span>
-            ) : null}
           </>
         )}
       </div>

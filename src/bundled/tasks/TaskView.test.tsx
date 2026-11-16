@@ -183,7 +183,8 @@ it("shows someone view-only there no edit controls, whatever their list says", (
   for (const name of ["Edit", "Move…", "More", "Link this chat", "Unlink"])
     expect(screen.queryByRole("button", { name })).toBeNull();
   expect(screen.queryByLabelText("Status")).toBeNull();
-  expect(screen.getByText("Read-only access")).toBeInTheDocument();
+  // Comments say it once, where they'd try to act.
+  expect(screen.queryByText("Read-only access")).toBeNull();
 });
 
 it("shows neither edit controls nor read-only while the relay is asked", () => {

@@ -127,6 +127,7 @@ it("offers a view-only person no way to start comments", async () => {
   });
   await answer(handles, home, { status: "open", post: false, joined: false });
   expect(screen.getByText("No comments yet.")).toBeInTheDocument();
+  expect(screen.getByText("Read-only access")).toBeInTheDocument();
   expect(screen.queryByRole("button")).toBeNull();
 });
 
