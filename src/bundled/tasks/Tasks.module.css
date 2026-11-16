@@ -58,6 +58,13 @@
   }
 }
 
+/* Project groups, a section's gap apart. */
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
 .toolbar {
   display: flex;
   flex-direction: column;
@@ -92,7 +99,11 @@
   min-width: 0;
 }
 
-/* One task, read or edited. */
+/* One task, read or edited. Its width decides whether Edit and Move show
+   as buttons or in More. */
+.task {
+  container: task / inline-size;
+}
 .task,
 .section {
   display: flex;
@@ -121,6 +132,27 @@
 .image {
   position: relative;
   max-width: 100%;
+}
+
+/* A status read-only: its icon beside its label, as in the list rows. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.wideOnly {
+  display: contents;
+}
+.more {
+  display: none;
+}
+@container task (max-width: 30rem) {
+  .wideOnly {
+    display: none;
+  }
+  .more {
+    display: contents;
+  }
 }
 
 /* A task link's status, in line with the link's text. */

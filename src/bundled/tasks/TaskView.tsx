@@ -31,6 +31,12 @@ import { AvatarStack } from "../../shared/design-system/ui/AvatarStack";
 import { Button } from "../../shared/design-system/ui/Button";
 import { TaskComments, type TaskCommentsProps } from "./TaskComments";
 import { Combobox } from "../../shared/design-system/ui/Combobox";
+import {
+  MenuItem,
+  MenuPopup,
+  MenuRoot,
+  MenuTrigger,
+} from "../../shared/design-system/ui/Menu";
 import { Field } from "../../shared/design-system/ui/Field";
 import { InlineHeader } from "../../shared/design-system/ui/Header";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
@@ -51,8 +57,14 @@ import {
   type TaskImage,
   type TaskStatus,
 } from "./model";
-import { accessChange, type Place, projectOf } from "./places";
-import { useCanEdit, usePlaces, useTaskHomes } from "./react";
+import {
+  accessChange,
+  type Place,
+  placeLabel,
+  projectOf,
+  readReaders,
+} from "./places";
+import { usePlaceAccess, usePlaces, useTaskPlaces } from "./react";
 import { saveTask, type SaveTarget } from "./store";
 import { StatusIcon } from "./StatusIcon";
 import styles from "./Tasks.module.css";
@@ -140,7 +152,9 @@ function TaskDetails({
   comments,
 }: TaskViewProps & { task: Task; edit(): void }) {
   const notify = useToastNotification();
-  const canEdit = useCanEdit(session, task.home);
+  // The relay's answer for the task's home decides every edit control.
+  const { access } = usePlaceAccess(session, task.home);
+  const canEdit = access === "edit";
   const [saving, setSaving] = useState(false);
   const [moving, setMoving] = useState(false);
   const places = usePlaces(session, [task.home]);
@@ -187,9 +201,9 @@ function TaskDetails({
         <TaskByline session={session} task={task} />
         <p className="text-body-sm text-subtle m-0">
           {project.id && project.id !== task.home
-            ? `${project.name ?? "Private project"}${home ? ` · ${placeLabel(home)}` : ""}`
+            ? `${project.name ?? "Private project"}${home ? ` · ${placeLabel(home, places)}` : ""}`
             : home
-              ? placeLabel(home)
+              ? placeLabel(home, places)
               : ""}
         </p>
       </div>
@@ -212,19 +226,39 @@ function TaskDetails({
               disabled={saving}
               onChange={(assignees) => void change({ assignees })}
             />
-            <Button size="sm" disabled={saving} onClick={edit}>
-              Edit
-            </Button>
-            <Button size="sm" disabled={saving} onClick={() => setMoving(true)}>
-              Move…
-            </Button>
+            <span className={styles.wideOnly}>
+              <Button size="sm" disabled={saving} onClick={edit}>
+                Edit
+              </Button>
+              <Button size="sm" disabled={saving} onClick={() => setMoving(true)}>
+                Move…
+              </Button>
+            </span>
+            <span className={styles.more}>
+              <MenuRoot>
+                <MenuTrigger
+                  render={
+                    <Button size="sm" disabled={saving}>
+                      More
+                    </Button>
+                  }
+                />
+                <MenuPopup>
+                  <MenuItem onClick={edit}>Edit</MenuItem>
+                  <MenuItem onClick={() => setMoving(true)}>Move…</MenuItem>
+                </MenuPopup>
+              </MenuRoot>
+            </span>
           </>
         ) : (
           <>
-            <span className="text-body-sm">
+            <span className={`text-body-sm ${styles.status}`}>
               <StatusIcon status={task.status} /> {statusLabels[task.status]}
             </span>
             <Assignees session={session} assignees={task.assignees} />
+            {access === "view" ? (
+              <span className="text-body-sm text-subtle">Read-only access</span>
+            ) : null}
           </>
         )}
       </div>
@@ -246,6 +280,7 @@ function TaskDetails({
         session={session}
         task={task}
         currentChat={currentChat}
+        canEdit={canEdit}
         openConversation={openConversation}
       />
       <section className={styles.section} aria-labelledby={`${task.id}-talk`}>
@@ -340,7 +375,7 @@ function Assignees({
 
 type Person = ReturnType<ReturnType<typeof usePeople>>;
 
-/** Up to four people, chosen from the people of the task's home. Agents
+/** Up to four people, chosen from the people who can see the task. Agents
  * are never offered: a person always answers for the work. */
 function AssigneePicker({
   session,
@@ -355,11 +390,12 @@ function AssigneePicker({
   disabled: boolean;
   onChange(assignees: readonly string[]): void;
 }) {
-  const homes = useTaskHomes(session);
-  const members = homes.find((item) => item.id === home)?.members;
+  // Its members and those of the places it is filed under. An open place
+  // has more readers than these; the relay checks every assignee either way.
+  const readers = useReadersOf(session, home);
   const pubkeys = useMemo(
-    () => [...new Set([...assignees, ...(members ?? [])])],
-    [assignees, members],
+    () => [...new Set([...assignees, ...(readers?.people ?? [])])],
+    [assignees, readers],
   );
   const person = usePeople(session, pubkeys);
   const [search, setSearch] = useState("");
@@ -426,13 +462,19 @@ function AssigneePicker({
 }
 
 function TaskByline({ session, task }: { session: RelaySession; task: Task }) {
-  const person = usePeople(session, [task.author, task.editor]);
+  const person = usePeople(
+    session,
+    [task.creator, task.via, task.editor].flatMap((key) => key ?? []),
+  );
   const label = (pubkey: string) =>
     pubkey === session.viewer ? "you" : person(pubkey).name;
+  const created = task.creator
+    ? `Created by ${label(task.creator)}${task.via ? ` via ${label(task.via)}` : ""} · `
+    : "";
   return (
     <p className="text-body-sm text-subtle m-0">
-      Created by {label(task.author)} · Updated{" "}
-      {relativeTimestamp(task.updatedAt * 1000)} by {label(task.editor)}
+      {created}Updated {relativeTimestamp(task.updatedAt * 1000)} by{" "}
+      {label(task.editor)}
     </p>
   );
 }
@@ -486,11 +528,14 @@ function LinkedConversations({
   session,
   task,
   currentChat,
+  canEdit,
   openConversation,
 }: {
   session: RelaySession;
   task: Task;
   currentChat: string | undefined;
+  /** Linking and unlinking edit the task, as the relay allows. */
+  canEdit: boolean;
   openConversation(channelId: string): void;
 }) {
   const notify = useToastNotification();
@@ -537,14 +582,16 @@ function LinkedConversations({
                 channelId={link.conversation}
                 open={() => openConversation(link.conversation)}
               />
-              <IconButton
-                size="sm"
-                variant="ghost"
-                aria-label="Unlink"
-                icon={<XIcon size={16} aria-hidden="true" />}
-                disabled={busy}
-                onClick={() => void toggle(link.conversation, false)}
-              />
+              {canEdit ? (
+                <IconButton
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Unlink"
+                  icon={<XIcon size={16} aria-hidden="true" />}
+                  disabled={busy}
+                  onClick={() => void toggle(link.conversation, false)}
+                />
+              ) : null}
             </li>
           ))}
         </ul>
@@ -553,7 +600,7 @@ function LinkedConversations({
           {links ? "No conversations you can see are linked." : "Loading…"}
         </p>
       )}
-      {currentChat && links && !linkedHere ? (
+      {canEdit && currentChat && links && !linkedHere ? (
         <div className={styles.actions}>
           <Button
             size="sm"
@@ -599,29 +646,62 @@ function LinkedConversation({
   );
 }
 
-/** Where a task can go: the places the viewer can post in, by name. */
+/** Where a task can go, by the one place-name rule. Whether the viewer can
+ * post there is asked when they pick it. */
 function homeGroups(
   homes: readonly { id: string; name: string; channelType?: string }[],
+  places: ReadonlyMap<string, Place>,
   except?: string,
 ): readonly SelectGroup[] {
   const options = (kind: "chat" | "channel") =>
     homes
       .filter((item) => item.id !== except)
       .filter((item) => (item.channelType === "solo") === (kind === "chat"))
-      .map((item) => ({ value: item.id, label: item.name || "Untitled" }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+      .map((item) => ({
+        value: item.id,
+        label: placeLabel(
+          { id: item.id, name: item.name || "Untitled", kind },
+          places,
+        ),
+      }));
   return [
     { label: "Channels", options: options("channel") },
     { label: "Chats", separator: true, options: options("chat") },
   ].filter((group) => group.options.length);
 }
 
-const placeLabel = (place: Place) =>
-  place.kind === "chat" ? place.name : `#${place.name}`;
-const placeList = (list: readonly Place[]) => list.map(placeLabel).join(", ");
+/** The places a picker offers, named and with their projects known. */
+function useHomeChoices(session: RelaySession, except?: string) {
+  const homes = useTaskPlaces(session);
+  const places = usePlaces(
+    session,
+    homes.map((item) => item.id),
+  );
+  const groups = useMemo(
+    () => homeGroups(homes, places, except),
+    [homes, places, except],
+  );
+  return { groups, places };
+}
+
+/** Why the viewer can't put a task in `place` yet, from the relay's answer;
+ * undefined once they can. */
+function placeProblem(access: string, label: string): string | undefined {
+  switch (access) {
+    case "edit":
+      return undefined;
+    case "loading":
+      return "";
+    case "failed":
+      return `Couldn’t check whether you can post in ${label}. Try again.`;
+    default:
+      return `You can’t post in ${label}, so a task can’t live there.`;
+  }
+}
 
 /** Moving one task: choose where, then confirm whose access changes, by
- * place. The task's comments go with it. */
+ * place. An assignee who can't see the new place is named, the one time a
+ * person is, and moving unassigns them. The task's comments go with it. */
 function MoveTask({
   session,
   task,
@@ -633,23 +713,37 @@ function MoveTask({
   onClose(): void;
   onMoved(task: Task): void;
 }) {
-  const homes = useTaskHomes(session);
-  const groups = homeGroups(homes, task.home);
+  const choices = useHomeChoices(session, task.home);
   const [to, setTo] = useState<string>();
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const target = usePlaceAccess(session, to);
   const places = usePlaces(session, to ? [task.home, to] : [task.home]);
-  const change = to ? accessChange(task.home, to, places) : undefined;
+  const named = new Map([...choices.places, ...places]);
+  const change = to ? accessChange(task.home, to, named) : undefined;
+  const destination = to && named.get(to);
+  const label = destination ? placeLabel(destination, named) : "that place";
+  const readers = useReadersOf(session, to);
+  const person = usePeople(session, task.assignees);
+  const dropped =
+    readers && !readers.anyone
+      ? task.assignees.filter((pubkey) => !readers.people.has(pubkey))
+      : [];
+  const problem = to ? placeProblem(target.access, label) : "";
+  const ready = !!to && problem === undefined && !!readers;
   const move = async () => {
-    if (!to) return;
+    if (!to || !ready) return;
     setPending(true);
     setError("");
     try {
-      const result = await saveTask(session, fieldsOf(task), {
-        op: "move",
-        base: task,
-        home: to,
-      });
+      const result = await saveTask(
+        session,
+        {
+          ...fieldsOf(task),
+          assignees: task.assignees.filter((key) => !dropped.includes(key)),
+        },
+        { op: "move", base: task, home: to },
+      );
       if (result.status === "saved") onMoved(result.task);
       else setError("Someone else changed this task. Close and try again.");
     } catch (reason) {
@@ -672,7 +766,7 @@ function MoveTask({
           <Button
             variant="prominent"
             loading={pending}
-            disabled={!to || pending}
+            disabled={!ready || pending}
             onClick={() => void move()}
           >
             Move
@@ -680,29 +774,46 @@ function MoveTask({
         </>
       }
     >
-      {groups.length ? (
+      {choices.groups.length ? (
         <Select
           label="Move to"
           variant="field"
           value={to ?? ""}
           placeholder="Choose a place"
-          groups={groups}
+          groups={choices.groups}
           onValueChange={setTo}
         />
       ) : (
         <p className="text-body-sm m-0">
-          There’s nowhere else you can post in to move this task.
+          There’s nowhere else you can move this task.
         </p>
       )}
-      {change?.gain.length ? (
+      {problem ? (
+        <div className={styles.actions} role="alert">
+          <p className="buzz-field-error m-0">{problem}</p>
+          {target.access === "failed" ? (
+            <Button size="sm" onClick={target.retry}>
+              Try again
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {problem === undefined && change?.gain.length ? (
         <p className="text-body-sm m-0">
-          Everyone in {placeList(change.gain)} will be able to see this task and
-          its comments.
+          Everyone in {placeList(change.gain, named)} will be able to see this
+          task and its comments.
         </p>
       ) : null}
-      {change?.lose.length ? (
+      {problem === undefined && change?.lose.length ? (
         <p className="text-body-sm m-0">
-          People who are only in {placeList(change.lose)} will lose access.
+          People who are only in {placeList(change.lose, named)} will lose
+          access.
+        </p>
+      ) : null}
+      {problem === undefined && dropped.length ? (
+        <p className="text-body-sm m-0">
+          {listNames(dropped.map((key) => person(key).name))} can’t see{" "}
+          {label} and will be unassigned.
         </p>
       ) : null}
       {error ? (
@@ -712,6 +823,31 @@ function MoveTask({
       ) : null}
     </AlertDialog>
   );
+}
+
+const placeList = (
+  list: readonly Place[],
+  places: ReadonlyMap<string, Place>,
+) => listNames(list.map((place) => placeLabel(place, places)));
+
+const listNames = (names: readonly string[]) =>
+  new Intl.ListFormat("en", { type: "conjunction" }).format(names);
+
+/** Who can see what lives in `home`; undefined until read, or with no home. */
+function useReadersOf(session: RelaySession, home: string | undefined) {
+  const [readers, setReaders] =
+    useState<Awaited<ReturnType<typeof readReaders>>>();
+  useEffect(() => {
+    setReaders(undefined);
+    if (!home) return;
+    const controller = new AbortController();
+    readReaders(session, home, controller.signal).then(
+      (read) => !controller.signal.aborted && setReaders(read),
+      () => {},
+    );
+    return () => controller.abort();
+  }, [session, home]);
+  return readers;
 }
 
 function TaskEditor({
@@ -724,7 +860,7 @@ function TaskEditor({
   onDone,
 }: TaskViewProps & { onDone(saved: boolean): void }) {
   const inputId = useId();
-  const homes = useTaskHomes(session);
+  const choices = useHomeChoices(session);
   const [draft, setDraft] = useState<TaskFields>(
     kept?.fields ?? (task ? fieldsOf(task) : empty),
   );
@@ -743,25 +879,34 @@ function TaskEditor({
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const files = useRef<HTMLInputElement>(null);
-  const groups = useMemo(() => homeGroups(homes), [homes]);
-  // Only a place the viewer can post in can take a new task.
-  const where = homes.some((item) => item.id === home) ? home : undefined;
+  // Only a place the relay says the viewer can post in takes a new task.
+  const target = usePlaceAccess(session, task ? undefined : home);
+  const startPlaces = usePlaces(session, home ? [home] : []);
+  const chosen = home ? startPlaces.get(home) : undefined;
+  const problem =
+    !task && home
+      ? placeProblem(
+          target.access,
+          chosen ? placeLabel(chosen, startPlaces) : "that place",
+        )
+      : undefined;
+  const where = problem === undefined ? home : undefined;
   const update = (next: Partial<TaskFields>) =>
     setDraft((current) => ({ ...current, ...next }));
   const submit = async () => {
-    const target: SaveTarget | undefined = base
+    const save: SaveTarget | undefined = base
       ? { op: "update", base }
       : where
         ? { op: "create", home: where, id: taskId }
         : undefined;
-    if (!target) {
-      setError("Choose where this task lives.");
+    if (!save) {
+      setError(problem || "Choose where this task lives.");
       return;
     }
     setError("");
     setSaving(true);
     try {
-      const result = await saveTask(session, draft, target);
+      const result = await saveTask(session, draft, save);
       if (result.status === "saved") {
         onSaved(result.task);
         onDone(true);
@@ -857,12 +1002,22 @@ function TaskEditor({
           label="Where it lives"
           variant="field"
           description="People who can see this place can see the task."
-          value={where ?? ""}
+          value={home ?? ""}
           placeholder="Choose a place"
-          groups={groups}
+          groups={choices.groups}
           onValueChange={setHome}
         />
       )}
+      {problem ? (
+        <div className={styles.actions} role="alert">
+          <p className="buzz-field-error m-0">{problem}</p>
+          {target.access === "failed" ? (
+            <Button size="sm" onClick={target.retry}>
+              Try again
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       <Field
         label="Description"
         description="Markdown. Write it so someone who can’t read this conversation can pick it up."

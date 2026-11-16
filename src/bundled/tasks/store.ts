@@ -13,8 +13,10 @@ import {
   TASK_TYPE,
   type Task,
   type TaskFields,
+  type TaskStatus,
   taskContent,
   taskOf,
+  taskTags,
 } from "./model";
 
 export type TasksState = Readonly<{
@@ -65,7 +67,7 @@ export function watchTasks(session: RelaySession): TasksView {
     const controller = new AbortController();
     fallback = controller;
     readTasks(session, controller.signal)
-      .then((tasks) => {
+      .then(({ tasks }) => {
         if (!controller.signal.aborted) set({ status: "live", tasks });
       })
       .catch((reason: unknown) => {
@@ -117,25 +119,54 @@ export function watchTasks(session: RelaySession): TasksView {
   };
 }
 
-/** One finite read of every current task the viewer can read. */
+/** What a finite read asks the relay for: each set matches any of its
+ * values, and all of them must match. */
+export type TaskQuery = Readonly<{
+  status?: readonly TaskStatus[] | undefined;
+  /** A person's pubkey, or `null` for tasks nobody has. */
+  assignee?: string | null | undefined;
+  /** A place: its tasks, and for a project everything filed in it. */
+  within?: string | undefined;
+}>;
+
+/** Where task reads come from: a session, or an agent's own reads. */
+export type TaskSource = Pick<RelaySession, "snapshotRead" | "relayAuthor">;
+
+/** One finite read of the current tasks the viewer can read that match
+ * `query`, filtered by the relay. `complete` is false when the read hit its
+ * cap, so more may match. */
 export async function readTasks(
-  session: RelaySession,
+  session: TaskSource,
   signal: AbortSignal,
-): Promise<readonly Task[]> {
+  query: TaskQuery = {},
+): Promise<Readonly<{ tasks: readonly Task[]; complete: boolean }>> {
   const read = session.snapshotRead;
   if (!read) throw new Error("Tasks aren’t available in this community.");
-  return toTasks(
-    await read([{ artifact: "current", ...taskFilter, limit: READ_LIMIT }], {
-      signal,
-    }),
+  const events = await read(
+    [
+      {
+        artifact: "current",
+        ...taskFilter,
+        ...(query.status?.length ? { "#status": [...query.status] } : {}),
+        ...(query.assignee
+          ? { "#assignee": [query.assignee] }
+          : query.assignee === null
+            ? { unassigned: true }
+            : {}),
+        ...(query.within ? { within: query.within } : {}),
+        limit: READ_LIMIT,
+      },
+    ],
+    { signal },
   );
+  return { tasks: toTasks(events), complete: events.length < READ_LIMIT };
 }
 
 /** Task `id`'s current revision, or undefined when the viewer can't read it
  * or it was deleted. `home`, when known, names its home, so a task readable
  * only by naming its home is found too. */
 export async function readTask(
-  session: RelaySession,
+  session: TaskSource,
   id: string,
   signal: AbortSignal,
   home?: string,
@@ -168,7 +199,8 @@ export type SaveResult =
 /** What a save does: create task `id` in `home`, update `base` where it
  * lives, or move `base` to `home` with `fields` as its snapshot. */
 export type SaveTarget =
-  | Readonly<{ op: "create"; home: string; id: string }>
+  /** `via`: the agent making it for the viewer, shown as a label. */
+  | Readonly<{ op: "create"; home: string; id: string; via?: string }>
   | Readonly<{ op: "update"; base: Task }>
   | Readonly<{ op: "move"; base: Task; home: string }>;
 
@@ -188,11 +220,14 @@ export async function saveTask(
   const base = target.op === "create" ? undefined : target.base;
   const id = base?.id ?? (target.op === "create" ? target.id : "");
   const home = target.op === "update" ? target.base.home : target.home;
+  // The signer of the first revision, carried forward as the relay checks.
+  const creator = base ? base.creator : viewer;
+  const via = base ? base.via : target.op === "create" ? target.via : undefined;
   const event = await writer.sign(
     {
       kind: ARTIFACT_KIND,
       created_at: Math.floor(Date.now() / 1000),
-      content: taskContent(checked, base?.author ?? viewer),
+      content: taskContent(checked),
       tags: [
         ["ar", "1"],
         ["d", id],
@@ -201,6 +236,9 @@ export async function saveTask(
         ["title", checked.title],
         ["op", target.op],
         ...(base ? [["prev", base.revision]] : []),
+        ...taskTags(checked),
+        ...(creator ? [["creator", creator]] : []),
+        ...(via ? [["via", via]] : []),
       ],
     },
     signal,

@@ -1,7 +1,7 @@
 // A task's comments: its own conversation, held open by name. The relay's
 // answer alone decides what shows: a neutral wait, then the comments with a
 // composer or read-only, never a composer while posting is unknown.
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import {
   ConversationChannel,
   ConversationComposer,
@@ -9,36 +9,12 @@ import {
 } from "../../features/conversation/Conversation";
 import type { ConversationHostServices } from "../../features/conversation/ConversationHost";
 import { MessageManagementStatus } from "../../features/messages/MessageManagement";
-import type {
-  ChannelReach,
-  ChannelReachState,
-} from "../../features/relay/channel-reach";
 import { useChannelWindow } from "../../features/relay/react";
 import type { RelaySession } from "../../features/relay/session";
 import { Button } from "../../shared/design-system/ui/Button";
 import type { Task } from "./model";
+import { useReach } from "./react";
 import styles from "./Tasks.module.css";
-
-const loading: ChannelReachState = Object.freeze({ status: "loading" });
-const quiet = () => () => {};
-
-/** Holds channel `id` open for as long as the view shows it. */
-function useReach(session: RelaySession, id: string | undefined) {
-  const [handle, setHandle] = useState<ChannelReach>();
-  useEffect(() => {
-    const reach = session.channels.reach;
-    if (!id || !reach) return;
-    const held = reach(id);
-    setHandle(held);
-    return () => {
-      held.release();
-      setHandle(undefined);
-    };
-  }, [session, id]);
-  const read = () => handle?.snapshot() ?? loading;
-  const state = useSyncExternalStore(handle?.subscribe ?? quiet, read, read);
-  return { state, retry: () => handle?.retry() };
-}
 
 function useConversationId(session: RelaySession, task: Task) {
   const [id, setId] = useState<string>();
@@ -128,9 +104,13 @@ export function TaskComments({
     );
   // Nobody has commented yet. Whoever may post in the task's home starts it.
   const canStart = home.state.status === "open" && home.state.post;
+  const readOnly = home.state.status === "open" && !home.state.post;
   return (
     <div className={styles.actions}>
       <p className="text-body-sm text-subtle m-0">No comments yet.</p>
+      {readOnly ? (
+        <p className="text-body-sm text-subtle m-0">Read-only access</p>
+      ) : null}
       {canStart ? (
         <Button
           type="button"

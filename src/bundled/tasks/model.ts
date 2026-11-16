@@ -1,13 +1,14 @@
 // A task is one NIP-AR artifact (kind 45010) of type `buzz.task`. Its `h` is
 // its home, a project, channel or chat, and the relay lets read it whoever
-// can read that home and edit it whoever can post there. Its content is the
-// complete snapshot; the relay keeps the revision history and refuses an
-// edit whose `prev` is stale.
+// can read that home and edit it whoever can post there. Each revision is
+// the complete snapshot: what the relay filters on and checks in tags
+// (`status`, one `assignee` per person, `creator`), the rest in content. The
+// relay keeps the revision history and refuses an edit whose `prev` is stale.
 import { ARTIFACT_KIND } from "../../features/agents/agent-config-artifacts";
 import type { EventData } from "../../features/relay/events";
 
 export const TASK_TYPE = "buzz.task";
-const CONTENT_VERSION = 2;
+const CONTENT_VERSION = 3;
 
 export const statuses = ["todo", "in_progress", "done", "cancelled"] as const;
 export type TaskStatus = (typeof statuses)[number];
@@ -42,8 +43,12 @@ export type Task = TaskFields &
     id: string;
     /** The artifact's `h`: the project, channel or chat it lives in. */
     home: string;
-    /** Who created it, as its creator's client recorded. */
-    author: string;
+    /** Who signed its first revision, as its `creator` tag carries forward
+     * (the relay checks it); undefined when a revision lacks one. */
+    creator: string | undefined;
+    /** The agent that made it for its creator, as that agent's tool noted.
+     * A label only: the creator answers for it. */
+    via: string | undefined;
     /** The current revision: its id is the next edit's `prev`. */
     revision: string;
     /** Who signed the current revision, and when. */
@@ -60,6 +65,9 @@ const CHANNEL =
 
 const tag = (event: EventData, name: string) =>
   event.tags.find((entry) => entry[0] === name)?.[1];
+
+const tags = (event: EventData, name: string) =>
+  event.tags.flatMap((entry) => (entry[0] === name ? [entry[1]] : []));
 
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 
@@ -104,24 +112,23 @@ export function taskOf(event: EventData & { id: string }): Task | undefined {
   } catch {
     return undefined;
   }
-  const author = text(content.author);
+  const creator = tag(event, "creator");
+  const via = tag(event, "via");
   return {
     id,
     home,
     title: (tag(event, "title") ?? "").slice(0, MAX_TITLE),
     description: text(content.description),
-    status: statuses.find((item) => item === content.status) ?? "todo",
+    status: statuses.find((item) => item === tag(event, "status")) ?? "todo",
     images: (Array.isArray(content.images) ? content.images : [])
       .flatMap((item) => imageOf(item) ?? [])
       .slice(0, MAX_IMAGES),
-    assignees: [
-      ...new Set(
-        (Array.isArray(content.assignees) ? content.assignees : []).filter(
-          isPubkey,
-        ),
-      ),
-    ].slice(0, MAX_ASSIGNEES),
-    author: isPubkey(author) ? author : event.pubkey,
+    assignees: [...new Set(tags(event, "assignee").filter(isPubkey))].slice(
+      0,
+      MAX_ASSIGNEES,
+    ),
+    creator: isPubkey(creator) ? creator : undefined,
+    via: isPubkey(via) ? via : undefined,
     revision: event.id,
     editor: event.pubkey,
     updatedAt: event.created_at,
@@ -149,22 +156,25 @@ export function checkedFields(fields: TaskFields): TaskFields {
   };
 }
 
-/** The revision's content: the complete snapshot, author preserved. */
-export const taskContent = (fields: TaskFields, author: string) =>
+/** The revision's content: what no relay rule reads. */
+export const taskContent = (fields: TaskFields) =>
   JSON.stringify({
     version: CONTENT_VERSION,
-    author,
     description: fields.description,
-    status: fields.status,
     images: fields.images,
-    assignees: fields.assignees,
   });
+
+/** The revision's tags the relay filters on and checks. */
+export const taskTags = (fields: TaskFields) => [
+  ["status", fields.status],
+  ...fields.assignees.map((pubkey) => ["assignee", pubkey]),
+];
 
 /** Newest activity first, then by id, so equal times keep one order. */
 export const byRecent = (a: Task, b: Task) =>
   b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
 
-/** Assigned to the viewer, or created by them. Created by their agent counts
- * through the author the agent's tools record: the owner. */
+/** Assigned to the viewer, or created by them. What their agent creates is
+ * theirs too: the agent's tools sign as its owner. */
 export const isMine = (task: Task, viewer: string) =>
-  task.author === viewer || task.assignees.includes(viewer);
+  task.creator === viewer || task.assignees.includes(viewer);

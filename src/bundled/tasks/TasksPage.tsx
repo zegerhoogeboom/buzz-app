@@ -319,33 +319,35 @@ function TaskBoard({
           }
         >
           {state.status === "loading" ? null : shown.length ? (
-            shown.map((group) => (
-              <section
-                key={group.id ?? NONE}
-                className={styles.section}
-                aria-label={group.name ?? "Not in a project"}
-              >
-                <InlineHeader
-                  title={
-                    group.id
-                      ? (group.name ?? "Private project")
-                      : "Not in a project"
-                  }
-                />
-                <ul className={styles.rows}>
-                  {group.tasks.map((item) => (
-                    <li key={item.id}>
-                      <NavigationItem
-                        icon={<StatusIcon status={item.status} />}
-                        label={item.title || "Untitled task"}
-                        selected={item.id === selected}
-                        onClick={() => setSelected(item.id)}
-                      />
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ))
+            <div className={styles.groups}>
+              {shown.map((group) => (
+                <section
+                  key={group.id ?? NONE}
+                  className={styles.section}
+                  aria-label={group.name ?? "Not in a project"}
+                >
+                  <InlineHeader
+                    title={
+                      group.id
+                        ? (group.name ?? "Private project")
+                        : "Not in a project"
+                    }
+                  />
+                  <ul className={styles.rows}>
+                    {group.tasks.map((item) => (
+                      <li key={item.id}>
+                        <NavigationItem
+                          icon={<StatusIcon status={item.status} />}
+                          label={item.title || "Untitled task"}
+                          selected={item.id === selected}
+                          onClick={() => setSelected(item.id)}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
           ) : (
             <EmptyState
               icon={<ClipboardCheckIcon size={24} />}

@@ -8,7 +8,8 @@ import { metadataName } from "../../features/relay/discovery";
 import { tag, type RelayEvent } from "../../features/relay/events";
 import type { RelaySession } from "../../features/relay/session";
 import { soloLabels } from "../../features/solo/labels";
-import { isChannelId, type Task } from "./model";
+import { channelVisibility } from "../../features/relay/channel-details-protocol";
+import { isChannelId, isPubkey, type Task } from "./model";
 
 export type Place = Readonly<{
   id: string;
@@ -16,6 +17,8 @@ export type Place = Readonly<{
   kind: "chat" | "channel";
   /** The channel it is filed under (NIP-29 `parent`), if any. */
   parent?: string | undefined;
+  /** Open to everyone in the community. */
+  open?: true | undefined;
 }>;
 
 /** A project as the Tasks page groups by it. `name` is undefined for a
@@ -36,12 +39,55 @@ function placeOf(event: RelayEvent): Place | undefined {
     name: metadataName(event) ?? id.slice(0, 8),
     kind: soloLabels(channelIdentity(event).labels) ? "chat" : "channel",
     ...(isChannelId(parent) ? { parent } : {}),
+    ...(channelVisibility(event) === "public" ? { open: true as const } : {}),
   };
+}
+
+/** A place other places are filed under. */
+export const isProject = (id: string, places: ReadonlyMap<string, Place>) =>
+  [...places.values()].some((place) => place.parent === id);
+
+/** One name for a place everywhere: a project as "Buzz", a chat by its
+ * name, any other channel as "#random". */
+export function placeLabel(
+  place: Pick<Place, "id" | "name" | "kind">,
+  places: ReadonlyMap<string, Place>,
+) {
+  return place.kind === "chat" || isProject(place.id, places)
+    ? place.name
+    : `#${place.name}`;
+}
+
+/** Who can see what lives in `home`: anyone, when it or a place it is filed
+ * under is open; otherwise the members of those places, from their
+ * relay-signed rosters. The relay refuses an assignee who can't. */
+export async function readReaders(
+  session: Pick<RelaySession, "snapshotRead" | "relayAuthor">,
+  home: string,
+  signal: AbortSignal,
+): Promise<Readonly<{ anyone: boolean; people: ReadonlySet<string> }>> {
+  const read = session.snapshotRead;
+  const author = session.relayAuthor;
+  if (!read || !author) return { anyone: false, people: new Set() };
+  const places = await readPlaces(session, [home], signal);
+  const chain = chainOf(home, places);
+  if (chain.some((id) => places.get(id)?.open))
+    return { anyone: true, people: new Set() };
+  const rosters = await read(
+    [{ kinds: [39002], authors: [author], "#d": chain, limit: chain.length }],
+    { signal },
+  );
+  const people = new Set<string>();
+  for (const roster of rosters)
+    if (roster.pubkey === author && chain.includes(tag(roster, "d") ?? ""))
+      for (const [name, value] of roster.tags)
+        if (name === "p" && isPubkey(value)) people.add(value);
+  return { anyone: false, people };
 }
 
 /** The places named by `ids`, and the projects they are filed in. */
 export async function readPlaces(
-  session: RelaySession,
+  session: Pick<RelaySession, "snapshotRead" | "relayAuthor">,
   ids: Iterable<string>,
   signal: AbortSignal,
 ): Promise<ReadonlyMap<string, Place>> {

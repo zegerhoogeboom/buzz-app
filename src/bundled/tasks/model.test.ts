@@ -6,6 +6,7 @@ import {
   TASK_TYPE,
   taskContent,
   taskOf,
+  taskTags,
 } from "./model";
 
 const author = "a".repeat(64);
@@ -34,16 +35,23 @@ const revision = (content: unknown, tags: string[][] = []) => ({
 
 it("reads a revision as the task it snapshots, in its home", () => {
   const task = taskOf(
-    revision({
-      version: 2,
-      author,
-      description: "It clips.",
-      status: "in_progress",
-      images: [
-        { url: "https://example.org/a.png", type: "image/png", dim: "10x20" },
+    revision(
+      {
+        version: 3,
+        description: "It clips.",
+        images: [
+          { url: "https://example.org/a.png", type: "image/png", dim: "10x20" },
+        ],
+      },
+      [
+        ["status", "in_progress"],
+        ["assignee", author],
+        ["assignee", author],
+        ["assignee", third],
+        ["creator", author],
+        ["via", third],
       ],
-      assignees: [author, author, third],
-    }),
+    ),
   );
   expect(task).toEqual({
     id,
@@ -55,35 +63,56 @@ it("reads a revision as the task it snapshots, in its home", () => {
       { url: "https://example.org/a.png", type: "image/png", dim: "10x20" },
     ],
     assignees: [author, third],
-    author,
+    creator: author,
+    via: third,
     revision: "e".repeat(64),
     editor,
     updatedAt: 10,
   });
 });
 
+it("trusts only tags for what the relay checks, never content", () => {
+  // An app could write a creator, status or assignees into content; none of
+  // it counts.
+  const task = taskOf(
+    revision(
+      {
+        author: third,
+        creator: third,
+        status: "done",
+        assignees: [third],
+      },
+      [],
+    ),
+  );
+  expect(task?.creator).toBeUndefined();
+  expect(task?.status).toBe("todo");
+  expect(task?.assignees).toEqual([]);
+});
+
 it("drops what an untrusted record can't safely show", () => {
   const task = taskOf(
-    revision({
-      author: "not a key",
-      status: "deleted",
-      images: [
-        { url: "http://example.org/a.png" },
-        { url: "javascript:alert(1)" },
-        { url: "https://example.org/b.png", type: "text/html", dim: "big" },
+    revision(
+      {
+        images: [
+          { url: "http://example.org/a.png" },
+          { url: "javascript:alert(1)" },
+          { url: "https://example.org/b.png", type: "text/html", dim: "big" },
+        ],
+      },
+      [
+        ["status", "deleted"],
+        ["creator", "not a key"],
+        ["via", "nobody"],
+        ...["someone", "d".repeat(64), "1".repeat(64), "2".repeat(64)].map(
+          (key) => ["assignee", key],
+        ),
+        ...["3", "4"].map((n) => ["assignee", n.repeat(64)]),
       ],
-      assignees: [
-        "someone",
-        7,
-        "d".repeat(64),
-        "1".repeat(64),
-        "2".repeat(64),
-        "3".repeat(64),
-        "4".repeat(64),
-      ],
-    }),
+    ),
   );
-  expect(task?.author).toBe(editor);
+  expect(task?.creator).toBeUndefined();
+  expect(task?.via).toBeUndefined();
   expect(task?.status).toBe("todo");
   expect(task?.images).toEqual([{ url: "https://example.org/b.png" }]);
   expect(task?.assignees).toEqual([
@@ -145,18 +174,19 @@ it("checks fields before saving, with reasons people can act on", () => {
       assignees: ["1", "2", "3", "4", "5"].map((n) => n.repeat(64)),
     }),
   ).toThrow("up to 4");
-  expect(JSON.parse(taskContent(checkedFields(fields), author))).toEqual({
-    version: 2,
-    author,
+  expect(JSON.parse(taskContent(checkedFields(fields)))).toEqual({
+    version: 3,
     description: "",
-    status: "todo",
     images: [],
-    assignees: [author],
   });
+  expect(taskTags(checkedFields(fields))).toEqual([
+    ["status", "todo"],
+    ["assignee", author],
+  ]);
 });
 
 it("counts a task as mine when I made it or I'm assigned", () => {
-  const task = taskOf(revision({ author: editor })) as Task;
+  const task = taskOf(revision({}, [["creator", editor]])) as Task;
   expect(isMine(task, editor)).toBe(true);
   expect(isMine(task, author)).toBe(false);
   expect(isMine({ ...task, assignees: [author] }, author)).toBe(true);

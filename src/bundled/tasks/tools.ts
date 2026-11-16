@@ -1,18 +1,22 @@
-// Agent tools: find, create, update and comment. Each runs in the owner's
-// app and writes as the owner, the way the owner's own edits do, so the
-// relay applies the owner's access. Two rules keep agents' tidying
-// trustworthy: create looks for an open task about the same thing first, and
-// Done or Cancelled needs evidence, left as a comment.
+// Agent tools: find, create, update and comment. An agent sees and says
+// things as itself: every read goes through its own connection, so it finds
+// only tasks it could read, and its comments are its own words. Saves are
+// signed by its owner, the task's creator, with the agent named as "via",
+// and only where the agent can read too; the relay applies the owner's
+// access to them. Three rules keep agents' tidying trustworthy: create looks
+// for an open task about the same thing first, Done or Cancelled needs
+// evidence, commented before the task closes, and a move is previewed and
+// done only once the person confirms it.
 import type { Agents as AgentsService } from "../../features/agents/service";
+import type { BuzzClient } from "../../buzz-mcp/client";
 import type { RelaySession } from "../../features/relay/session";
-import { postComment } from "./conversation";
+import { postAgentComment } from "./conversation";
 import { setLink } from "./links";
 import {
   byRecent,
   checkedFields,
   imageOf,
   isChannelId,
-  isOpenStatus,
   isPubkey,
   MAX_ASSIGNEES,
   statuses,
@@ -21,12 +25,22 @@ import {
   type TaskFields,
   type TaskStatus,
 } from "./model";
-import { type Place, projectOf, readPlaces } from "./places";
-import { readTask, readTasks, saveTask } from "./store";
+import {
+  accessChange,
+  type Place,
+  placeLabel,
+  projectOf,
+  readPlaces,
+  readReaders,
+} from "./places";
+import { readTask, readTasks, saveTask, type TaskSource } from "./store";
 import { holdsWords, sameness } from "./similar";
 
 type Agents = Pick<AgentsService, "addTool" | "relay">;
-type Client = { key: string; signal?: AbortSignal | undefined };
+type Client = Pick<BuzzClient, "key" | "pubkey" | "query" | "publish"> & {
+  signal?: AbortSignal | undefined;
+  relayAuthor?: string | undefined;
+};
 type Args = Record<string, unknown>;
 
 /** How many times an agent's change is reapplied over someone else's edit. */
@@ -34,14 +48,31 @@ const ATTEMPTS = 3;
 const LIST_LIMIT = 50;
 /** How long one tool call's relay work may take. */
 const STEP_TIMEOUT = 60_000;
+/** How long a move preview's confirmation stays good. */
+const PREVIEW_TTL = 15 * 60_000;
 /** At or above: the same task. Between this and CLEAR: a person decides. */
 const CLEAR_MATCH = 0.8;
 const POSSIBLE_MATCH = 0.5;
+const OPEN: readonly TaskStatus[] = ["todo", "in_progress"];
+const CLOSED: readonly TaskStatus[] = ["done", "cancelled"];
+const INCOMPLETE =
+  "\n(These may not be all of them: narrow the search to see the rest.)";
 
 const deadline = (client: Client) =>
   client.signal
     ? AbortSignal.any([client.signal, AbortSignal.timeout(STEP_TIMEOUT)])
     : AbortSignal.timeout(STEP_TIMEOUT);
+
+/** The agent's own reads, as task reads take them. */
+function agentReads(client: Client, session: RelaySession): TaskSource {
+  return {
+    relayAuthor: client.relayAuthor ?? session.relayAuthor,
+    snapshotRead: (filters, { signal }) => {
+      signal?.throwIfAborted();
+      return client.query(filters as never) as never;
+    },
+  };
+}
 
 const statusOf = (value: unknown): TaskStatus | undefined =>
   statuses.find((status) => status === value);
@@ -71,33 +102,66 @@ function imagesArg(args: Args) {
   });
 }
 
-/** Assignees by pubkey, people only: an agent never answers for a task. */
-function assigneesArg(args: Args, session: RelaySession) {
+function assigneesArg(args: Args) {
   if (args.assignees === undefined) return undefined;
   const list = args.assignees;
   if (!Array.isArray(list) || !list.every(isPubkey))
     throw new Error("assignees must be a list of people's hex pubkeys");
   if (list.length > MAX_ASSIGNEES)
     throw new Error(`A task has up to ${MAX_ASSIGNEES} assignees`);
+  return [...new Set(list)];
+}
+
+/** Refuses anyone who isn't a known person able to see what lives in
+ * `home`, rather than guessing: an agent never answers for a task. */
+async function checkAssignees(
+  session: RelaySession,
+  reads: TaskSource,
+  home: string,
+  assignees: readonly string[],
+  signal: AbortSignal,
+) {
+  if (!assignees.length) return;
+  await session.profiles.ensure([...assignees], "foreground").catch(() => {});
   const profiles = session.profiles.snapshot();
-  if (list.some((pubkey) => profiles.get(pubkey)?.isAgent))
-    throw new Error("Only people can be assigned, never agents");
-  return list;
+  for (const pubkey of assignees) {
+    const profile = profiles.get(pubkey);
+    if (!profile)
+      throw new Error(
+        `Couldn't find a person with pubkey ${pubkey}; nobody was assigned`,
+      );
+    if (profile.isAgent)
+      throw new Error("Only people can be assigned, never agents");
+  }
+  const readers = await readReaders(reads, home, signal);
+  if (readers.anyone) return;
+  const blind = assignees.filter((pubkey) => !readers.people.has(pubkey));
+  if (blind.length)
+    throw new Error(
+      `${blind.map((pubkey) => nameOf(session, pubkey)).join(", ")} can't see this task, so they can't be assigned`,
+    );
 }
 
 const nameOf = (session: RelaySession, pubkey: string) =>
   session.profiles.snapshot().get(pubkey)?.name ?? pubkey;
 
+const labelOf = (id: string, places: ReadonlyMap<string, Place>) => {
+  const place = places.get(id);
+  return place ? placeLabel(place, places) : "a private place";
+};
+
 /** Where it lives and who can see it, in words an agent can pass on. */
 function whereabouts(task: Task, places: ReadonlyMap<string, Place>) {
   const home = places.get(task.home);
   const project = projectOf(task, places);
-  const place = home ? `${home.name} (${home.kind}, ${home.id})` : task.home;
+  const place = home
+    ? `${placeLabel(home, places)} (${home.kind}, ${home.id})`
+    : task.home;
   const inProject =
     project.id && project.id !== task.home
       ? ` in the ${project.name ?? "private"} project`
       : "";
-  return `Lives in ${place}${inProject}. Anyone who can open ${home?.name ?? "that place"} can see it.`;
+  return `Lives in ${place}${inProject}. Anyone who can open ${home ? placeLabel(home, places) : "that place"} can see it.`;
 }
 
 function describe(
@@ -105,12 +169,15 @@ function describe(
   session: RelaySession,
   places: ReadonlyMap<string, Place>,
 ) {
+  const creator = task.creator
+    ? `${nameOf(session, task.creator)}${task.via ? ` via ${nameOf(session, task.via)}` : ""}`
+    : "unknown";
   return [
     `# ${task.title}`,
     `id: ${task.id}`,
     `status: ${statusLabels[task.status]}`,
     `assignees: ${task.assignees.map((pubkey) => nameOf(session, pubkey)).join(", ") || "nobody"}`,
-    `created by: ${nameOf(session, task.author)}`,
+    `created by: ${creator}`,
     `updated: ${new Date(task.updatedAt * 1000).toISOString()} by ${nameOf(session, task.editor)}`,
     whereabouts(task, places),
     "",
@@ -128,7 +195,18 @@ const summary = (task: Task, session: RelaySession) =>
       : "nobody has it"
   })`;
 
+/** A move the person was shown, good once for that revision and place. */
+type Preview = Readonly<{
+  task: string;
+  revision: string;
+  to: string;
+  keep: readonly string[];
+  expires: number;
+}>;
+
 export function addTaskTools(agents: Agents) {
+  const previews = new Map<string, Preview>();
+
   /** The owner's session for this agent's community. */
   function sessionOf(client: Client) {
     const relay = agents.relay(client.key)?.snapshot();
@@ -137,27 +215,41 @@ export function addTaskTools(agents: Agents) {
     return relay.session;
   }
 
-  async function current(
-    session: RelaySession,
-    id: string,
-    signal: AbortSignal,
-  ) {
-    const task = await readTask(session, id, signal);
+  /** The task as the agent can read it; one it can't read isn't there. */
+  async function current(reads: TaskSource, id: string, signal: AbortSignal) {
+    const task = await readTask(reads, id, signal);
     if (!task) throw new Error(`No task ${id} that you can read`);
     return task;
   }
 
-  /** Applies `edit` to the newest revision, again over anyone else's save. */
+  /** Throws unless the agent can read place `id`. */
+  async function readable(reads: TaskSource, id: string, signal: AbortSignal) {
+    const places = await readPlaces(reads, [id], signal);
+    if (!places.has(id))
+      throw new Error(
+        "You can't see that place, so a task can't go there. Nothing changed.",
+      );
+    return places;
+  }
+
+  /** Applies `edit` to the newest revision the agent can read, again over
+   * anyone else's save. The owner signs; the relay may refuse them. */
   async function change(
     session: RelaySession,
+    reads: TaskSource,
     id: string,
     edit: (task: Task) => TaskFields,
     signal: AbortSignal,
     home?: string,
+    revision?: string,
   ) {
-    let task = await current(session, id, signal);
+    let task = await current(reads, id, signal);
     for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
       signal.throwIfAborted();
+      if (revision && task.revision !== revision)
+        throw new Error(
+          "The task changed since the move was previewed. Preview it again.",
+        );
       const target =
         home && home !== task.home
           ? { op: "move" as const, base: task, home }
@@ -201,22 +293,19 @@ export function addTaskTools(agents: Agents) {
     },
     async call(client, _context, args) {
       const session = sessionOf(client);
+      const reads = agentReads(client, session);
       const signal = deadline(client);
       const id = textArg(args, "id");
       if (id) {
-        const task = await current(session, id, signal);
+        const task = await current(reads, id, signal);
         return describe(
           task,
           session,
-          await readPlaces(session, [task.home], signal),
+          await readPlaces(reads, [task.home], signal),
         );
       }
       const words = (textArg(args, "words") ?? "").trim();
       const place = channelArg(args, "place");
-      const which =
-        args.status === "closed" || args.status === "all"
-          ? args.status
-          : "open";
       const assignee = textArg(args, "assignee");
       if (
         assignee &&
@@ -225,47 +314,47 @@ export function addTaskTools(agents: Agents) {
         !isPubkey(assignee)
       )
         throw new Error('assignee must be "me", "nobody" or a hex pubkey');
-      const who = assignee === "me" ? session.viewer : assignee;
-      const all = await readTasks(session, signal);
-      const places = place
-        ? await readPlaces(
-            session,
-            all.map((task) => task.home),
-            signal,
-          )
-        : undefined;
-      const tasks = all
+      const { tasks: found, complete } = await readTasks(reads, signal, {
+        status:
+          args.status === "all"
+            ? undefined
+            : args.status === "closed"
+              ? CLOSED
+              : OPEN,
+        assignee:
+          assignee === "me"
+            ? session.viewer
+            : assignee === "nobody"
+              ? null
+              : assignee,
+        within: place,
+      });
+      const tasks = found
         .filter(
           (task) =>
-            (which === "all" ||
-              isOpenStatus(task.status) === (which === "open")) &&
-            (!who ||
-              (who === "nobody"
-                ? task.assignees.length === 0
-                : task.assignees.includes(who))) &&
-            (!place ||
-              task.home === place ||
-              (places && projectOf(task, places).id === place)) &&
-            (!words || holdsWords(words, `${task.title} ${task.description}`)),
+            !words || holdsWords(words, `${task.title} ${task.description}`),
         )
         .sort(byRecent);
-      if (!tasks.length) return "No tasks match.";
-      return tasks
-        .slice(0, LIST_LIMIT)
-        .map((task) => summary(task, session))
-        .concat(
-          tasks.length > LIST_LIMIT
-            ? [`…and ${tasks.length - LIST_LIMIT} more`]
-            : [],
-        )
-        .join("\n");
+      const more = complete ? "" : INCOMPLETE;
+      if (!tasks.length) return `No tasks match.${more}`;
+      return (
+        tasks
+          .slice(0, LIST_LIMIT)
+          .map((task) => summary(task, session))
+          .concat(
+            tasks.length > LIST_LIMIT
+              ? [`…and ${tasks.length - LIST_LIMIT} more`]
+              : [],
+          )
+          .join("\n") + more
+      );
     },
   });
 
   agents.addTool({
     name: "tasks_create",
     description:
-      "Creates a task from what you're working on, without asking first: a short title, a Markdown description that makes sense to someone who can't read this conversation, and image links. It lives in place (default: this conversation), and everyone who can open that place can see it. It first looks for an open task about the same thing there: a clear match is returned instead, so comment on it with tasks_comment; a possible match is returned for the person to decide, and only then create with new_anyway. If you can't post in place, nothing is created: say so, never put it somewhere else. Reply with the task's id, where it lives and who can see it.",
+      "Creates a task from what you're working on, without asking first: a short title, a Markdown description that makes sense to someone who can't read this conversation, and image links. It lives in place (default: this conversation), and everyone who can open that place can see it. It first looks for an open task about the same thing there, across its whole project: a clear match is returned instead, so comment on it with tasks_comment; a possible match is returned for the person to decide, and only then create with new_anyway. If you can't see place or the person you work for can't post there, nothing is created: say so, never put it somewhere else. Reply with the task's id, where it lives and who can see it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -300,6 +389,7 @@ export function addTaskTools(agents: Agents) {
     },
     async call(client, context, args) {
       const session = sessionOf(client);
+      const reads = agentReads(client, session);
       const signal = deadline(client);
       const home = channelArg(args, "place") ?? context.channel;
       if (!isChannelId(home))
@@ -311,9 +401,13 @@ export function addTaskTools(agents: Agents) {
         images: imagesArg(args) ?? [],
         assignees: [],
       });
-      const open = (await readTasks(session, signal)).filter(
-        (task) => task.home === home && isOpenStatus(task.status),
-      );
+      const places = await readable(reads, home, signal);
+      // The whole project the place is in, or the place itself.
+      const project = places.get(home)?.parent ?? home;
+      const { tasks: open, complete } = await readTasks(reads, signal, {
+        status: OPEN,
+        within: project,
+      });
       const scored = open
         .map((task) => ({ task, score: sameness(fields.title, task.title) }))
         .sort((a, b) => b.score - a.score);
@@ -321,17 +415,18 @@ export function addTaskTools(agents: Agents) {
       if (best && best.score >= CLEAR_MATCH)
         return `Not created: open task ${best.task.id} is about the same thing. Comment on it with tasks_comment instead.\n\n${summary(best.task, session)}`;
       const possible = scored.filter((item) => item.score >= POSSIBLE_MATCH);
+      const unsure = complete ? "" : INCOMPLETE;
       if (possible.length && args.new_anyway !== true)
         return `Not created yet: these open tasks may be about the same thing. Ask the person whether one of them is it; if not, call tasks_create again with new_anyway.\n\n${possible
           .slice(0, 5)
           .map((item) => summary(item.task, session))
-          .join("\n")}`;
+          .join("\n")}${unsure}`;
       // Named before saving, so a retry after an unclear outcome can check.
       const id = crypto.randomUUID();
       const result = await saveTask(
         session,
         fields,
-        { op: "create", home, id },
+        { op: "create", home, id, via: client.pubkey },
         signal,
       ).catch((reason: unknown) => {
         throw new Error(
@@ -349,15 +444,17 @@ export function addTaskTools(agents: Agents) {
               () => "\nCouldn't link this conversation.",
             )
           : "";
-      const places = await readPlaces(session, [home], signal);
-      return `Created task ${id}.${linked}\n\n${describe(result.task, session, places)}`;
+      const checked = complete
+        ? ""
+        : "\n(The check for an existing task may have missed some.)";
+      return `Created task ${id}.${linked}${checked}\n\n${describe(result.task, session, places)}`;
     },
   });
 
   agents.addTool({
     name: "tasks_update",
     description:
-      "Changes a task: title, description, images, assignees, status, or place (moving it changes who can see it and its comments). Omitted fields stay. Set In progress when work starts; that assigns the person you work for. Set Done or Cancelled only with evidence, such as a merged pull request or someone saying it's finished, and give it as evidence: it's left as a comment. Otherwise comment on progress instead.",
+      "Changes a task: title, description, images, assignees or status. Omitted fields stay. Set In progress when work starts; that assigns the person you work for. Set Done or Cancelled only with evidence, such as a merged pull request or someone saying it's finished, and give it as evidence: it's commented first, and the task closes only once the comment is in. To move a task, give only id and place: you get a preview of what changes, show it to the person, and only once they agree call again with the same id and place and the preview's confirm. Otherwise comment on progress instead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -372,7 +469,8 @@ export function addTaskTools(agents: Agents) {
         assignees: {
           type: "array",
           items: { type: "string" },
-          description: "People's hex pubkeys, up to four; replaces the list",
+          description:
+            "People's hex pubkeys, up to four, who can see the task; replaces the list",
         },
         status: { type: "string", enum: [...statuses] },
         evidence: {
@@ -381,7 +479,13 @@ export function addTaskTools(agents: Agents) {
         },
         place: {
           type: "string",
-          description: "Move it to this project, channel or chat id",
+          description:
+            "Move it to this project, channel or chat id, on its own: first a preview, then with confirm",
+        },
+        confirm: {
+          type: "string",
+          description:
+            "The confirm from a move preview, once the person agreed to it",
         },
       },
       required: ["id"],
@@ -389,12 +493,17 @@ export function addTaskTools(agents: Agents) {
     },
     async call(client, _context, args) {
       const session = sessionOf(client);
+      const reads = agentReads(client, session);
       const id = textArg(args, "id") ?? "";
+      const place = channelArg(args, "place");
+      const signal = deadline(client);
+      if (place) return move(session, reads, id, place, args, signal);
+      if (args.confirm !== undefined)
+        throw new Error("confirm goes with the place of a move preview");
       const title = textArg(args, "title");
       const description = textArg(args, "description");
       const images = imagesArg(args);
-      const assignees = assigneesArg(args, session);
-      const place = channelArg(args, "place");
+      const assignees = assigneesArg(args);
       const status =
         args.status === undefined ? undefined : statusOf(args.status);
       if (args.status !== undefined && !status)
@@ -405,10 +514,20 @@ export function addTaskTools(agents: Agents) {
         throw new Error(
           "Done or Cancelled needs evidence: say in one line why, such as the merged pull request or who said it's finished",
         );
-      const signal = deadline(client);
+      const task = await current(reads, id, signal);
+      if (assignees)
+        await checkAssignees(session, reads, task.home, assignees, signal);
+      // The evidence comes first: no comment, no close.
+      if (closing && evidence && task.status !== status)
+        await postAgentComment(
+          client,
+          task,
+          `${statusLabels[status]}: ${evidence}`,
+        );
       const viewer = session.viewer;
-      const task = await change(
+      const saved = await change(
         session,
+        reads,
         id,
         (base) => {
           const people = assignees ?? base.assignees;
@@ -429,30 +548,106 @@ export function addTaskTools(agents: Agents) {
           };
         },
         signal,
-        place,
-      );
-      const noted =
-        closing && evidence
-          ? await postComment(
-              session,
-              task,
-              `${statusLabels[task.status]}: ${evidence}`,
-              signal,
-            ).then(
-              () => "",
-              () =>
-                "\nThe evidence comment didn't post; add it with tasks_comment.",
-            )
-          : "";
-      const places = await readPlaces(session, [task.home], signal);
-      return `Updated.${noted}\n\n${describe(task, session, places)}`;
+      ).catch((reason: unknown) => {
+        if (!closing) throw reason;
+        throw new Error(
+          `The evidence comment is in, but the task didn't close: ${
+            reason instanceof Error ? reason.message : "the save failed"
+          }`,
+        );
+      });
+      const places = await readPlaces(reads, [saved.home], signal);
+      return `Updated.\n\n${describe(saved, session, places)}`;
     },
   });
+
+  /** A move: first what it changes, by place, and who it unassigns; then,
+   * with that preview's confirm, the move itself. */
+  async function move(
+    session: RelaySession,
+    reads: TaskSource,
+    id: string,
+    to: string,
+    args: Args,
+    signal: AbortSignal,
+  ) {
+    const others = Object.keys(args).filter(
+      (key) => !["id", "place", "confirm"].includes(key),
+    );
+    if (others.length)
+      throw new Error(
+        `Move a task on its own: change ${others.join(", ")} in another call`,
+      );
+    const task = await current(reads, id, signal);
+    if (task.home === to) return "It already lives there. Nothing changed.";
+    await readable(reads, to, signal);
+    const places = await readPlaces(reads, [task.home, to], signal);
+    const confirm = textArg(args, "confirm");
+    if (confirm) {
+      const preview = previews.get(confirm);
+      previews.delete(confirm);
+      if (
+        !preview ||
+        preview.expires < Date.now() ||
+        preview.task !== task.id ||
+        preview.to !== to
+      )
+        throw new Error(
+          "That confirm isn't from a preview of this move. Preview it again.",
+        );
+      const moved = await change(
+        session,
+        reads,
+        id,
+        (base) => ({ ...base, assignees: preview.keep }),
+        signal,
+        to,
+        preview.revision,
+      );
+      return `Moved.\n\n${describe(moved, session, places)}`;
+    }
+    const { gain, lose } = accessChange(task.home, to, places);
+    const readers = await readReaders(reads, to, signal);
+    const keep = readers.anyone
+      ? task.assignees
+      : task.assignees.filter((pubkey) => readers.people.has(pubkey));
+    const dropped = task.assignees.filter((pubkey) => !keep.includes(pubkey));
+    for (const [key, value] of previews)
+      if (value.expires < Date.now()) previews.delete(key);
+    const token = crypto.randomUUID();
+    previews.set(token, {
+      task: task.id,
+      revision: task.revision,
+      to,
+      keep,
+      expires: Date.now() + PREVIEW_TTL,
+    });
+    const named = (list: readonly Place[]) =>
+      list.map((place) => placeLabel(place, places)).join(", ");
+    const destination = labelOf(to, places);
+    return [
+      `Not moved yet. Moving "${task.title}" to ${destination}:`,
+      ...(gain.length
+        ? [
+            `- Everyone in ${named(gain)} will be able to see it and its comments.`,
+          ]
+        : []),
+      ...(lose.length
+        ? [`- People who are only in ${named(lose)} will lose access.`]
+        : []),
+      ...dropped.map(
+        (pubkey) =>
+          `- ${nameOf(session, pubkey)} can't see ${destination} and will be unassigned.`,
+      ),
+      "",
+      `Show this to the person. Only if they agree, call tasks_update with id, place and confirm "${token}".`,
+    ].join("\n");
+  }
 
   agents.addTool({
     name: "tasks_comment",
     description:
-      "Comments on a task, such as progress, a summary of a thread about it, or the answer to a question in it. Everyone who can see the task reads it.",
+      "Comments on a task as you, such as progress, a summary of a thread about it, or the answer to a question in it. Everyone who can see the task reads it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -467,8 +662,12 @@ export function addTaskTools(agents: Agents) {
       const signal = deadline(client);
       const text = (textArg(args, "text") ?? "").trim();
       if (!text) throw new Error("text must not be empty");
-      const task = await current(session, textArg(args, "id") ?? "", signal);
-      await postComment(session, task, text, signal);
+      const task = await current(
+        agentReads(client, session),
+        textArg(args, "id") ?? "",
+        signal,
+      );
+      await postAgentComment(client, task, text);
       return `Commented on ${task.id}.`;
     },
   });

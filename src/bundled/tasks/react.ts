@@ -6,6 +6,10 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { RelaySession } from "../../features/relay/session";
+import type {
+  ChannelReach,
+  ChannelReachState,
+} from "../../features/relay/channel-reach";
 import type { ChannelSummary } from "../../features/relay/contracts";
 import { useChannelRoster } from "../../features/relay/react";
 import type { Task } from "./model";
@@ -102,29 +106,80 @@ export function usePlaces(
   return places;
 }
 
-/** Where the viewer can make or move a task: channels and chats in their
- * list they can post in. DMs hold no tasks. */
-export const isTaskHome = (channel: ChannelSummary) =>
+/** Places a task can live in: channels and chats, not DMs, huddles or
+ * archived ones. Whether the viewer may post there is the relay's answer
+ * (`usePlaceAccess`), never this list's. */
+export const isTaskPlace = (channel: ChannelSummary) =>
   !channel.archived &&
-  !channel.readOnly &&
   !channel.pending &&
   !channel.huddle &&
-  channel.viewerRole !== "guest" &&
-  channel.viewerRole !== undefined &&
   (channel.channelType === "stream" ||
     channel.channelType === "forum" ||
     channel.channelType === "solo");
 
-export function useTaskHomes(session: RelaySession) {
+/** The places the viewer knows of, those this device already knows they can
+ * post in first. */
+export function useTaskPlaces(session: RelaySession) {
   const { channels } = useChannelRoster(session.channels);
-  return useMemo(() => channels.filter(isTaskHome), [channels]);
+  return useMemo(
+    () =>
+      channels
+        .filter(isTaskPlace)
+        .sort((a, b) => Number(!!a.readOnly) - Number(!!b.readOnly)),
+    [channels],
+  );
 }
 
-/** Whether the viewer may edit tasks in `home`, as far as this device
- * knows: a guest or read-only place is view only. A place the viewer reads
- * through its project isn't in their list; the relay decides there. */
-export function useCanEdit(session: RelaySession, home: string) {
+/** What the viewer may do with tasks in a place, from the relay's answer:
+ * `edit` where they can post, `view` where they can only read. `loading`
+ * and `failed` show neither edit controls nor a read-only notice yet. */
+export type PlaceAccess = "loading" | "edit" | "view" | "none" | "failed";
+
+const asking: ChannelReachState = Object.freeze({ status: "loading" });
+const quiet = () => () => {};
+
+/** Holds channel `id` open while mounted, and the relay's answer for it. */
+export function useReach(session: RelaySession, id: string | undefined) {
+  const [handle, setHandle] = useState<ChannelReach>();
+  useEffect(() => {
+    const reach = session.channels.reach;
+    if (!id || !reach) return;
+    const held = reach(id);
+    setHandle(held);
+    return () => {
+      held.release();
+      setHandle(undefined);
+    };
+  }, [session, id]);
+  const read = () => handle?.snapshot() ?? asking;
+  const state = useSyncExternalStore(handle?.subscribe ?? quiet, read, read);
+  return { state, retry: () => handle?.retry() };
+}
+
+export const accessOf = (state: ChannelReachState): PlaceAccess =>
+  state.status === "open"
+    ? state.post
+      ? "edit"
+      : "view"
+    : state.status === "unavailable"
+      ? state.reason === "failed"
+        ? "failed"
+        : "none"
+      : "loading";
+
+/** The viewer's access to tasks in `id`. A connection that can't ask the
+ * relay by name falls back to its channel list's posting answer. */
+export function usePlaceAccess(
+  session: RelaySession,
+  id: string | undefined,
+): Readonly<{ access: PlaceAccess; retry(): void }> {
+  const reach = useReach(session, id);
   const { channels } = useChannelRoster(session.channels);
-  const channel = channels.find((item) => item.id === home);
-  return !channel || (!channel.readOnly && channel.viewerRole !== "guest");
+  if (session.channels.reach)
+    return { access: accessOf(reach.state), retry: reach.retry };
+  const listed = channels.find((channel) => channel.id === id);
+  return {
+    access: !listed ? "none" : listed.readOnly ? "view" : "edit",
+    retry: () => {},
+  };
 }
