@@ -230,7 +230,11 @@ function TaskDetails({
               <Button size="sm" disabled={saving} onClick={edit}>
                 Edit
               </Button>
-              <Button size="sm" disabled={saving} onClick={() => setMoving(true)}>
+              <Button
+                size="sm"
+                disabled={saving}
+                onClick={() => setMoving(true)}
+              >
                 Move…
               </Button>
             </span>
@@ -428,7 +432,7 @@ function AssigneePicker({
         if (next.length <= MAX_ASSIGNEES) onChange(next.map((item) => item.id));
       }}
     >
-      <Combobox.Trigger label="Assignees" disabled={disabled}>
+      <Combobox.Trigger variant="compact" label="Assignees" disabled={disabled}>
         {chosen.length ? (
           <AvatarStack
             size="mini"
@@ -812,8 +816,8 @@ function MoveTask({
       ) : null}
       {problem === undefined && dropped.length ? (
         <p className="text-body-sm m-0">
-          {listNames(dropped.map((key) => person(key).name))} can’t see{" "}
-          {label} and will be unassigned.
+          {listNames(dropped.map((key) => person(key).name))} can’t see {label}{" "}
+          and will be unassigned.
         </p>
       ) : null}
       {error ? (
