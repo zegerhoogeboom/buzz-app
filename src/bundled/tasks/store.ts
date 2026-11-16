@@ -1,10 +1,10 @@
-// Reading and saving tasks in one tasks channel. Reads follow the relay's
-// NIP-AR sync where it has one; saves are compare-and-set on the head the
-// editor opened, so a concurrent edit is reported, never overwritten.
+// Reading and saving tasks. Each task lives in its home; reads ask the relay
+// for every task the viewer can read, wherever it lives, and the relay alone
+// decides that. Saves are compare-and-set on the revision the editor opened,
+// so a concurrent edit is reported, never overwritten.
 import {
   ARTIFACT_KIND,
   deliver,
-  readHead,
 } from "../../features/agents/agent-config-artifacts";
 import type { RelayEvent } from "../../features/relay/events";
 import type { RelaySession } from "../../features/relay/session";
@@ -32,46 +32,41 @@ export type TasksView = Readonly<{
 /** The session reader's cap on one finite read. */
 const READ_LIMIT = 500;
 
+const taskFilter = { kinds: [ARTIFACT_KIND], "#type": [TASK_TYPE] };
+
 const toTasks = (events: readonly RelayEvent[]) =>
   events.flatMap((event) => taskOf(event) ?? []);
 
-/** Every current task in `channel`, kept current while subscribed. */
-export function watchTasks(session: RelaySession, channel: string): TasksView {
+/** Every current task the viewer can read, kept current while subscribed. */
+export function watchTasks(session: RelaySession): TasksView {
   const listeners = new Set<() => void>();
   let state: TasksState = { status: "loading", tasks: [] };
   const set = (next: TasksState) => {
     state = next;
     for (const listener of listeners) listener();
   };
-  const filter = {
+  const sync = session.artifacts.sync({
     artifact: "current" as const,
-    kinds: [ARTIFACT_KIND],
-    "#h": [channel],
-    "#type": [TASK_TYPE],
-  };
-  const sync = session.artifacts.sync(filter);
+    ...taskFilter,
+  });
   let fallback: AbortController | undefined;
   // A relay without sync gets one finite read; saves on this device still
   // show through `saved`.
   const readOnce = () => {
-    if (fallback || !session.snapshotRead) {
-      if (!session.snapshotRead)
-        set({
-          status: "error",
-          tasks: [],
-          error: "Tasks aren’t available in this community.",
-        });
+    if (fallback) return;
+    if (!session.snapshotRead) {
+      set({
+        status: "error",
+        tasks: [],
+        error: "Tasks aren’t available in this community.",
+      });
       return;
     }
     const controller = new AbortController();
     fallback = controller;
-    session
-      .snapshotRead([{ ...filter, limit: READ_LIMIT }], {
-        signal: controller.signal,
-      })
-      .then((events) => {
-        if (!controller.signal.aborted)
-          set({ status: "live", tasks: toTasks(events) });
+    readTasks(session, controller.signal)
+      .then((tasks) => {
+        if (!controller.signal.aborted) set({ status: "live", tasks });
       })
       .catch((reason: unknown) => {
         if (!controller.signal.aborted)
@@ -122,28 +117,77 @@ export function watchTasks(session: RelaySession, channel: string): TasksView {
   };
 }
 
+/** One finite read of every current task the viewer can read. */
+export async function readTasks(
+  session: RelaySession,
+  signal: AbortSignal,
+): Promise<readonly Task[]> {
+  const read = session.snapshotRead;
+  if (!read) throw new Error("Tasks aren’t available in this community.");
+  return toTasks(
+    await read([{ artifact: "current", ...taskFilter, limit: READ_LIMIT }], {
+      signal,
+    }),
+  );
+}
+
+/** Task `id`'s current revision, or undefined when the viewer can't read it
+ * or it was deleted. `home`, when known, names its home, so a task readable
+ * only by naming its home is found too. */
+export async function readTask(
+  session: RelaySession,
+  id: string,
+  signal: AbortSignal,
+  home?: string,
+): Promise<Task | undefined> {
+  const read = session.snapshotRead;
+  if (!read) throw new Error("Tasks aren’t available in this community.");
+  const events = await read(
+    [
+      {
+        artifact: "current",
+        ...taskFilter,
+        "#d": [id],
+        ...(home ? { "#h": [home] } : {}),
+        limit: 2,
+      },
+    ],
+    { signal },
+  );
+  const tasks = toTasks(events).filter((task) => task.id === id);
+  // A moved task named by its old home reads as missing; ask without it.
+  if (!tasks.length && home) return readTask(session, id, signal);
+  return tasks.length === 1 ? tasks[0] : undefined;
+}
+
 export type SaveResult =
   | Readonly<{ status: "saved"; task: Task }>
   /** Someone else saved first; `current` is their version, the next base. */
   | Readonly<{ status: "conflict"; current: Task }>;
 
-/** Creates task `id` (no `base`) or saves `fields` over the `base` revision.
- * A new task's caller keeps one `id` across retries, so a create that landed
- * unseen is found, not made twice. */
+/** What a save does: create task `id` in `home`, update `base` where it
+ * lives, or move `base` to `home` with `fields` as its snapshot. */
+export type SaveTarget =
+  | Readonly<{ op: "create"; home: string; id: string }>
+  | Readonly<{ op: "update"; base: Task }>
+  | Readonly<{ op: "move"; base: Task; home: string }>;
+
+/** Saves one revision. A new task's caller keeps one `id` across retries, so
+ * a create that landed unseen is found, not made twice. */
 export async function saveTask(
   session: RelaySession,
-  channel: string,
   fields: TaskFields,
-  base: Task | undefined,
+  target: SaveTarget,
   signal: AbortSignal = AbortSignal.timeout(20_000),
-  id: string = base?.id ?? crypto.randomUUID(),
 ): Promise<SaveResult> {
-  const read = session.snapshotRead;
   const writer = session.configArtifactWriter;
   const viewer = session.viewer;
-  if (!read || !writer || !viewer)
+  if (!session.snapshotRead || !writer || !viewer)
     throw new Error("This community connection can’t save tasks.");
   const checked = checkedFields(fields);
+  const base = target.op === "create" ? undefined : target.base;
+  const id = base?.id ?? (target.op === "create" ? target.id : "");
+  const home = target.op === "update" ? target.base.home : target.home;
   const event = await writer.sign(
     {
       kind: ARTIFACT_KIND,
@@ -152,10 +196,10 @@ export async function saveTask(
       tags: [
         ["ar", "1"],
         ["d", id],
-        ["h", channel],
+        ["h", home],
         ["type", TASK_TYPE],
         ["title", checked.title],
-        ["op", base ? "update" : "create"],
+        ["op", target.op],
         ...(base ? [["prev", base.revision]] : []),
       ],
     },
@@ -172,10 +216,9 @@ export async function saveTask(
     delivery.status === "uncertain"
   ) {
     // The head shows whether this revision landed, or whose did instead.
-    const head = await readHead(read, channel, id, signal).catch(
+    const current = await readTask(session, id, signal, home).catch(
       () => undefined,
     );
-    const current = head && taskOf(head);
     if (current?.revision === event.id)
       return { status: "saved", task: current };
     if (delivery.status === "refused" && current)
@@ -185,7 +228,9 @@ export async function saveTask(
   }
   throw new Error(
     delivery.status === "refused" && delivery.refusal === "permission"
-      ? "You can’t edit tasks in this community."
+      ? target.op === "move"
+        ? "You can only move a task between places you can post in."
+        : "You can only view tasks here."
       : delivery.status === "refused" && delivery.refusal === "too-large"
         ? "This task is too large to save. Shorten the description."
         : "Couldn’t save the task. Try again.",

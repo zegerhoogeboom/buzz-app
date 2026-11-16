@@ -30,7 +30,6 @@ import { MediaMenuDownloadNotice } from "../features/messages/MediaDownloadActio
 import { CreationReview } from "../bundled/agents/CreationReview";
 import { UpdateReview } from "../bundled/agents/UpdateReview";
 import { TeamUpdateReview } from "../bundled/agents/TeamUpdateReview";
-import { ShareRequestDialog } from "../features/solo/ShareRequestDialog";
 import { InterruptedNotice } from "../features/agents/InterruptedNotice";
 import {
   useEffect,
@@ -750,7 +749,6 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
           <CreationReview agents={services.agents} />
           <UpdateReview agents={services.agents} />
           <TeamUpdateReview agents={services.agents} />
-          <ShareRequestDialog requests={services.shareRequests} />
           {!settings && startup === "recovery" ? (
             <RecoveryScreen plugins={plugins} />
           ) : !settings &&

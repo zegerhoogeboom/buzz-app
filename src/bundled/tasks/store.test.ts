@@ -2,27 +2,30 @@ import { expect, it, vi } from "vitest";
 import { PublishRejected } from "../../features/relay/outbox";
 import type { RelaySession } from "../../features/relay/session";
 import { TASK_TYPE, type Task, type TaskFields, taskOf } from "./model";
-import { saveTask } from "./store";
+import { readTask, saveTask } from "./store";
 
 const viewer = "a".repeat(64);
+const id = "11111111-1111-4111-8111-111111111111";
+const home = "22222222-2222-4222-8222-222222222222";
+const away = "33333333-3333-4333-8333-333333333333";
 const fields: TaskFields = {
   title: "Fix the header",
   description: "It clips.",
-  status: "open",
+  status: "todo",
   images: [],
-  links: [],
+  assignees: [],
 };
-const head = (id: string, content: object) => ({
-  id,
+const head = (revision: string, content: object = {}, at = home) => ({
+  id: revision,
   pubkey: "b".repeat(64),
   sig: "",
   created_at: 5,
   kind: 45010,
-  content: JSON.stringify({ version: 1, author: viewer, ...content }),
+  content: JSON.stringify({ version: 2, author: viewer, ...content }),
   tags: [
     ["ar", "1"],
-    ["d", "task-1"],
-    ["h", "tasks"],
+    ["d", id],
+    ["h", at],
     ["type", TASK_TYPE],
     ["title", "Fix the header"],
     ["op", "update"],
@@ -36,29 +39,47 @@ function session(publish: () => Promise<string>, heads: object[] = []) {
     pubkey: viewer,
     sig: "",
   }));
+  const read = vi.fn(async () => heads);
   return {
     sign,
+    read,
     session: {
       viewer,
-      snapshotRead: vi.fn(async () => heads),
+      snapshotRead: read,
       configArtifactWriter: { sign, publish: vi.fn(publish) },
     } as unknown as RelaySession,
   };
 }
+const tagsOf = (sign: ReturnType<typeof session>["sign"], call: number) =>
+  (sign.mock.calls[call]?.[0] as unknown as { tags: string[][] } | undefined)
+    ?.tags ?? [];
 
-it("creates a task, then edits only the revision it opened", async () => {
+it("creates a task in its home, then edits only the revision it opened", async () => {
   const { session: relay, sign } = session(async () => "");
-  const created = await saveTask(relay, "tasks", fields, undefined);
+  const created = await saveTask(relay, fields, { op: "create", home, id });
   expect(created.status).toBe("saved");
-  const tags = sign.mock.calls[0]?.[0] as unknown as { tags: string[][] };
-  expect(tags.tags).toContainEqual(["op", "create"]);
-  expect(tags.tags.some(([name]) => name === "prev")).toBe(false);
+  expect(tagsOf(sign, 0)).toContainEqual(["op", "create"]);
+  expect(tagsOf(sign, 0)).toContainEqual(["h", home]);
+  expect(tagsOf(sign, 0).some(([name]) => name === "prev")).toBe(false);
   if (created.status !== "saved") return;
-  await saveTask(relay, "tasks", { ...fields, status: "done" }, created.task);
-  const update = sign.mock.calls[1]?.[0] as unknown as { tags: string[][] };
-  expect(update.tags).toContainEqual(["op", "update"]);
-  expect(update.tags).toContainEqual(["prev", created.task.revision]);
-  expect(update.tags).toContainEqual(["d", created.task.id]);
+  await saveTask(
+    relay,
+    { ...fields, status: "done" },
+    { op: "update", base: created.task },
+  );
+  expect(tagsOf(sign, 1)).toContainEqual(["op", "update"]);
+  expect(tagsOf(sign, 1)).toContainEqual(["prev", created.task.revision]);
+  expect(tagsOf(sign, 1)).toContainEqual(["h", home]);
+});
+
+it("moves a task as a revision whose home is the new place", async () => {
+  const { session: relay, sign } = session(async () => "");
+  const base = taskOf(head("d".repeat(64))) as Task;
+  const moved = await saveTask(relay, fields, { op: "move", base, home: away });
+  expect(moved.status === "saved" && moved.task.home).toBe(away);
+  expect(tagsOf(sign, 0)).toContainEqual(["op", "move"]);
+  expect(tagsOf(sign, 0)).toContainEqual(["h", away]);
+  expect(tagsOf(sign, 0)).toContainEqual(["prev", base.revision]);
 });
 
 it("reports someone else's save as a conflict with their version", async () => {
@@ -66,55 +87,59 @@ it("reports someone else's save as a conflict with their version", async () => {
   const { session: relay } = session(async () => {
     throw new PublishRejected("rejected", "conflict: stale prev");
   }, [theirs]);
-  const base = taskOf(head("d".repeat(64), {})) as Task;
-  const result = await saveTask(relay, "tasks", fields, base);
+  const base = taskOf(head("d".repeat(64))) as Task;
+  const result = await saveTask(relay, fields, { op: "update", base });
   expect(result).toEqual({ status: "conflict", current: taskOf(theirs) });
 });
 
 it("confirms an uncertain save from the head, else says it failed", async () => {
-  const base = taskOf(head("d".repeat(64), {})) as Task;
+  const base = taskOf(head("d".repeat(64))) as Task;
   const landed = session(async () => {
     throw new Error("socket closed");
-  }, [head("f".repeat(64), {})]);
-  expect((await saveTask(landed.session, "tasks", fields, base)).status).toBe(
-    "saved",
-  );
+  }, [head("f".repeat(64))]);
+  expect(
+    (await saveTask(landed.session, fields, { op: "update", base })).status,
+  ).toBe("saved");
   const lost = session(async () => {
     throw new Error("socket closed");
-  }, [head("d".repeat(64), {})]);
-  await expect(saveTask(lost.session, "tasks", fields, base)).rejects.toThrow(
-    "Couldn’t save the task. Try again.",
-  );
+  }, [head("d".repeat(64))]);
+  await expect(
+    saveTask(lost.session, fields, { op: "update", base }),
+  ).rejects.toThrow("Couldn’t save the task. Try again.");
+});
+
+it("says why the relay refused, for an edit and for a move", async () => {
+  const base = taskOf(head("d".repeat(64))) as Task;
   const refused = session(async () => {
     throw new PublishRejected("rejected", "restricted: not a member");
   });
   await expect(
-    saveTask(refused.session, "tasks", fields, base),
-  ).rejects.toThrow("You can’t edit tasks in this community.");
+    saveTask(refused.session, fields, { op: "update", base }),
+  ).rejects.toThrow("You can only view tasks here.");
+  await expect(
+    saveTask(refused.session, fields, { op: "move", base, home: away }),
+  ).rejects.toThrow("between places you can post in");
 });
 
 it("finds a create that landed unseen instead of making a second task", async () => {
   const { session: relay, sign } = session(async () => {
     throw new Error("socket closed");
-  }, [
-    {
-      ...head("f".repeat(64), {}),
-      tags: [
-        ["d", "chosen"],
-        ["type", TASK_TYPE],
-        ["title", "Fix the header"],
-      ],
-    },
-  ]);
-  const result = await saveTask(
-    relay,
-    "tasks",
-    fields,
-    undefined,
-    undefined,
-    "chosen",
-  );
+  }, [head("f".repeat(64))]);
+  const result = await saveTask(relay, fields, { op: "create", home, id });
   expect(result.status).toBe("saved");
-  const template = sign.mock.calls[0]?.[0] as unknown as { tags: string[][] };
-  expect(template.tags).toContainEqual(["d", "chosen"]);
+  expect(tagsOf(sign, 0)).toContainEqual(["d", id]);
+});
+
+it("finds a moved task when its old home no longer has it", async () => {
+  const read = vi
+    .fn()
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([head("d".repeat(64), {}, away)]);
+  const relay = { snapshotRead: read } as unknown as RelaySession;
+  const task = await readTask(relay, id, AbortSignal.timeout(1000), home);
+  expect(task?.home).toBe(away);
+  expect(read.mock.calls[0]?.[0]).toEqual([
+    expect.objectContaining({ "#h": [home], "#d": [id] }),
+  ]);
+  expect(read.mock.calls[1]?.[0]?.[0]).not.toHaveProperty("#h");
 });

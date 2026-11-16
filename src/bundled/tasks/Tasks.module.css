@@ -1,3 +1,5 @@
+/* Layout only: spacing and arrangement of the plugin's own elements. Every
+   control is a design-system component in its own appearance. */
 .page {
   container: tasks-page / inline-size;
   display: flex;
@@ -15,7 +17,7 @@
   padding: var(--space-4);
 }
 
-/* List beside the open task; a narrow pane shows one at a time. */
+/* List beside the open task; a narrow pane shows one at a time, with Back. */
 .board {
   flex: 1;
   min-height: 0;
@@ -23,7 +25,7 @@
   grid-template-columns: minmax(0, 1fr);
 }
 .board[data-detail] {
-  grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+  grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr);
 }
 .list,
 .detail {
@@ -32,7 +34,7 @@
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   padding: var(--space-4);
 }
 .detail {
@@ -56,8 +58,13 @@
   }
 }
 
-.toolbar,
-.actionRow {
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.actions,
+.controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -86,33 +93,22 @@
 }
 
 /* One task, read or edited. */
-.task {
+.task,
+.section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
   min-width: 0;
 }
-.taskHeading {
+.section {
+  gap: var(--space-2);
+}
+.heading {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
   min-width: 0;
-}
-.taskHeading h2 {
-  margin: 0;
   overflow-wrap: anywhere;
-}
-.taskActions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-}
-.section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
 }
 .images {
   display: flex;
@@ -127,19 +123,17 @@
   max-width: 100%;
 }
 
-/* In the flow of the form, so nothing above it can cover it. */
-.notice {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--border-warning);
-  border-radius: var(--radius-card);
-  background: var(--affordance-warning);
-  color: var(--text-warning);
+/* A task link's status, in line with the link's text. */
+.linkIcon {
+  display: inline-flex;
+  margin-right: var(--space-half);
+  vertical-align: -0.1875em;
 }
-.notice > p {
-  flex: 1 1 12rem;
-  margin: 0;
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 20rem;
+  overflow-wrap: anywhere;
 }

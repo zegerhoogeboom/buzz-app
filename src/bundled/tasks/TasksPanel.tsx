@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { RelaySession } from "../../features/relay/session";
 import {
   ArrowLeftIcon,
-  LinkIcon,
   ClipboardCheckIcon,
+  LinkIcon,
   PlusIcon,
 } from "../../shared/design-system/icons/index";
 import { Button } from "../../shared/design-system/ui/Button";
@@ -17,63 +17,63 @@ import {
 } from "../../shared/design-system/ui/Menu";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import { useToastNotification } from "../../shared/design-system/ui/Toast";
-import { isOpenStatus, type Task } from "./model";
-import { type TasksChannel, useTasksWithSaved } from "./react";
-import { saveTask } from "./store";
+import { readLinks, setLink } from "./links";
+import { byRecent, isOpenStatus } from "./model";
+import { useTasksWithSaved } from "./react";
 import { StatusIcon } from "./StatusIcon";
 import { TaskView, type TaskViewProps } from "./TaskView";
 import styles from "./Tasks.module.css";
 
-/** Open tasks the "Link to a task" menu offers, newest first. */
+/** Open tasks the "Link a task" menu offers, newest first. */
 const LINK_CHOICES = 20;
 
-/** Tasks beside one conversation: those linked to it, and ways to make or
- * link one from here. A task opens in place, with Back. */
+/** Tasks beside one conversation: those living in it and those linked to
+ * it, and ways to make or link one from here. A task opens in place, with
+ * Back. */
 export function TasksPanel({
   session,
-  channel,
   chat,
-  readyToLink,
   openConversation,
 }: {
   session: RelaySession;
-  channel: TasksChannel;
   /** The conversation this panel sits beside. */
   chat: string;
-} & Pick<TaskViewProps, "readyToLink" | "openConversation">) {
-  const state = useTasksWithSaved(session, channel.id);
+} & Pick<TaskViewProps, "openConversation">) {
+  const state = useTasksWithSaved(session);
   const notify = useToastNotification();
-  // A new task carries the links it starts with; consent waits for Create.
-  const [open, setOpen] = useState<string | { newLinks: string[] }>();
+  const [open, setOpen] = useState<string>();
+  const [linked, setLinked] = useState<ReadonlySet<string>>();
   const [linking, setLinking] = useState(false);
-  const linked = state.tasks
-    .filter((task) => task.links.includes(chat))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+  const [attempt, setAttempt] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a change is a new read.
+  useEffect(() => {
+    const controller = new AbortController();
+    readLinks(session, { conversation: chat }, controller.signal).then(
+      (links) =>
+        !controller.signal.aborted &&
+        setLinked(new Set(links.map((link) => link.task))),
+      () => !controller.signal.aborted && setLinked(new Set()),
+    );
+    return () => controller.abort();
+  }, [session, chat, attempt]);
+  const here = state.tasks
+    .filter((task) => task.home === chat || linked?.has(task.id))
+    .sort(byRecent);
   const choices = state.tasks
-    .filter((task) => isOpenStatus(task.status) && !task.links.includes(chat))
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .filter(
+      (task) =>
+        isOpenStatus(task.status) &&
+        task.home !== chat &&
+        !linked?.has(task.id),
+    )
+    .sort(byRecent)
     .slice(0, LINK_CHOICES);
-  const cleared = async (task: Task) => {
-    const outcome = await readyToLink(chat, task.title);
-    if (outcome === "unavailable")
-      notify("Only this chat’s owner can link it to a task.", "error");
-    return outcome === "shared";
-  };
-  const linkTo = async (task: Task) => {
+  const linkTo = async (task: string) => {
     if (linking) return;
     setLinking(true);
     try {
-      if (!(await cleared(task))) return;
-      // A task to link to means the tasks channel exists.
-      if (!channel.id) return;
-      const result = await saveTask(
-        session,
-        channel.id,
-        { ...task, links: [...task.links, chat] },
-        task,
-      );
-      if (result.status === "saved") state.setSaved(result.task);
-      else notify("Someone else changed this task. Try again.", "error");
+      await setLink(session, task, chat, true, AbortSignal.timeout(20_000));
+      setAttempt((count) => count + 1);
     } catch (reason) {
       notify(
         reason instanceof Error ? reason.message : "Couldn’t link the task.",
@@ -84,14 +84,22 @@ export function TasksPanel({
     }
   };
   const task =
-    typeof open === "string"
+    open && open !== "new"
       ? state.tasks.find((item) => item.id === open)
       : undefined;
-  if (open && (typeof open === "object" || task))
+  if (open === "new" || task)
     return (
       <div className={styles.body}>
         <div>
-          <Button size="sm" variant="ghost" onClick={() => setOpen(undefined)}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setOpen(undefined);
+              // Links may have changed in the task.
+              setAttempt((count) => count + 1);
+            }}
+          >
             <ArrowLeftIcon size={16} aria-hidden="true" />
             Back
           </Button>
@@ -99,11 +107,9 @@ export function TasksPanel({
         <TaskView
           key={task?.id ?? "new"}
           session={session}
-          channel={channel}
           task={task}
+          home={chat}
           currentChat={chat}
-          newLinks={typeof open === "object" ? open.newLinks : undefined}
-          readyToLink={readyToLink}
           openConversation={openConversation}
           onSaved={(next) => {
             state.setSaved(next);
@@ -115,28 +121,28 @@ export function TasksPanel({
     );
   return (
     <div className={styles.body}>
-      <div className={styles.toolbar}>
+      <div className={styles.actions}>
         <Button
           size="sm"
           variant="prominent"
           disabled={linking}
-          onClick={() => setOpen({ newLinks: [chat] })}
+          onClick={() => setOpen("new")}
         >
           <PlusIcon size={16} aria-hidden="true" />
-          New task from this chat
+          New task
         </Button>
         <MenuRoot>
           <MenuTrigger
             render={
               <Button size="sm" loading={linking} disabled={!choices.length}>
                 <LinkIcon size={16} aria-hidden="true" />
-                Link to a task
+                Link a task
               </Button>
             }
           />
           <MenuPopup>
             {choices.map((item) => (
-              <MenuItem key={item.id} onClick={() => void linkTo(item)}>
+              <MenuItem key={item.id} onClick={() => void linkTo(item.id)}>
                 {item.title || "Untitled task"}
               </MenuItem>
             ))}
@@ -144,7 +150,7 @@ export function TasksPanel({
         </MenuRoot>
       </div>
       <LoadingRegion
-        pending={state.status === "loading"}
+        pending={state.status === "loading" || !linked}
         label="Loading tasks…"
         feedback={
           state.status === "error" ? (
@@ -154,9 +160,9 @@ export function TasksPanel({
           ) : undefined
         }
       >
-        {state.status === "loading" ? null : linked.length ? (
-          <ul className={styles.rows} aria-label="Tasks linked here">
-            {linked.map((item) => (
+        {state.status === "loading" || !linked ? null : here.length ? (
+          <ul className={styles.rows} aria-label="Tasks here">
+            {here.map((item) => (
               <li key={item.id}>
                 <NavigationItem
                   icon={<StatusIcon status={item.status} />}
@@ -169,8 +175,8 @@ export function TasksPanel({
         ) : (
           <EmptyState
             icon={<ClipboardCheckIcon size={24} />}
-            title="No tasks linked here"
-            description="Make a task from this chat, or link it to one that already exists."
+            title="No tasks here"
+            description="Make a task from this conversation, or link one that already exists."
           />
         )}
       </LoadingRegion>

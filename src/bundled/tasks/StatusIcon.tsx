@@ -10,13 +10,13 @@ import type { TaskStatus } from "./model";
 export function StatusIcon({ status }: { status: TaskStatus }) {
   const props = { size: 16, "aria-hidden": true } as const;
   switch (status) {
-    case "open":
+    case "todo":
       return <CircleIcon {...props} />;
     case "in_progress":
       return <CircleHalfIcon {...props} />;
     case "done":
       return <CheckCircleIcon {...props} />;
-    case "wont_do":
+    case "cancelled":
       return <XCircleIcon {...props} />;
   }
 }

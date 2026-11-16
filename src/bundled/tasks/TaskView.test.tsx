@@ -2,6 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import type { ChannelSummary } from "../../features/relay/contracts";
 import { PublishRejected } from "../../features/relay/outbox";
 import type { RelaySession } from "../../features/relay/session";
 import { TASK_TYPE, type Task, taskOf } from "./model";
@@ -10,17 +11,18 @@ import { TaskView } from "./TaskView";
 afterEach(cleanup);
 
 const viewer = "a".repeat(64);
-const tasksChannel = { id: "tasks", open: async () => "tasks" };
-const chat = "11111111-1111-4111-8111-111111111111";
-const revision = (id: string, title: string, content: object = {}) => ({
-  id,
+const id = "11111111-1111-4111-8111-111111111111";
+const home = "22222222-2222-4222-8222-222222222222";
+const revision = (revisionId: string, title: string) => ({
+  id: revisionId,
   pubkey: "b".repeat(64),
   sig: "",
   created_at: 5,
   kind: 45010,
-  content: JSON.stringify({ version: 1, author: viewer, ...content }),
+  content: JSON.stringify({ version: 2, author: viewer }),
   tags: [
-    ["d", "task-1"],
+    ["d", id],
+    ["h", home],
     ["type", TASK_TYPE],
     ["title", title],
   ],
@@ -28,13 +30,37 @@ const revision = (id: string, title: string, content: object = {}) => ({
 const mine = taskOf(revision("d".repeat(64), "Fix the header")) as Task;
 const theirs = revision("c".repeat(64), "Their title");
 
-function setup(publish: () => Promise<string>) {
+function setup(
+  publish: () => Promise<string>,
+  role: ChannelSummary["viewerRole"] = "member",
+) {
   const signed: { tags: string[][] }[] = [];
+  const channels: ChannelSummary[] = [
+    { id: home, name: "design", channelType: "stream", viewerRole: role },
+  ];
+  const profiles = new Map();
+  const list = { status: "ready", channels };
   const session = {
     viewer,
-    profiles: { snapshot: () => new Map() },
-    channels: { list: () => ({ channels: [] }) },
-    snapshotRead: vi.fn(async () => [theirs]),
+    media: () => undefined,
+    profiles: {
+      snapshot: () => profiles,
+      subscribe: () => () => {},
+      ensure: async () => {},
+    },
+    channels: {
+      ensureList: () => () => {},
+      subscribeList: () => () => {},
+      list: () => list,
+    },
+    snapshotRead: vi.fn(async (filters: { kinds?: number[] }[]) =>
+      filters[0]?.kinds?.includes(45010) &&
+      !(filters[0] as Record<string, unknown>)["#type"]
+        ?.toString()
+        .includes("link")
+        ? [theirs]
+        : [],
+    ),
     configArtifactWriter: {
       sign: vi.fn(async (template: { tags: string[][] }) => {
         signed.push(template);
@@ -56,9 +82,7 @@ it("keeps the person's text on a conflict, then saves over the newer version", a
   render(
     <TaskView
       session={session}
-      channel={tasksChannel}
       task={mine}
-      readyToLink={async () => "shared"}
       openConversation={() => {}}
       onSaved={onSaved}
     />,
@@ -79,103 +103,40 @@ it("keeps the person's text on a conflict, then saves over the newer version", a
   expect(signed[1]?.tags).toContainEqual(["title", "My title"]);
 });
 
-it("shows their version when asked", async () => {
-  const { session } = setup(async () => {
-    throw new PublishRejected("rejected", "conflict: stale prev");
-  });
+it("shows a guest the task with no edit controls", () => {
+  const { session } = setup(async () => "", "guest");
   render(
     <TaskView
       session={session}
-      channel={tasksChannel}
       task={mine}
-      readyToLink={async () => "shared"}
       openConversation={() => {}}
       onSaved={() => {}}
     />,
   );
-  fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  fireEvent.click(
-    await screen.findByRole("button", { name: "Show their version" }),
-  );
-  expect(screen.getByLabelText("Title")).toHaveValue("Their title");
-  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("Read-only access")).toBeInTheDocument();
+  for (const name of ["Edit", "Move…"])
+    expect(screen.queryByRole("button", { name })).toBeNull();
+  expect(screen.queryByLabelText("Status")).toBeNull();
 });
 
-it("links the current chat only once it may be linked", async () => {
+it("creates a new task in the place it started, posting nothing", async () => {
   const { session, signed } = setup(async () => "");
-  const readyToLink = vi
-    .fn<(id: string) => Promise<"shared" | "cancelled" | "unavailable">>()
-    .mockResolvedValueOnce("cancelled")
-    .mockResolvedValueOnce("shared");
   const onSaved = vi.fn();
   render(
     <TaskView
       session={session}
-      channel={tasksChannel}
-      task={mine}
-      currentChat={chat}
-      readyToLink={readyToLink}
+      task={undefined}
+      home={home}
       openConversation={() => {}}
       onSaved={onSaved}
-    />,
-  );
-  const link = screen.getByRole("button", { name: "Link this chat" });
-  fireEvent.click(link);
-  await vi.waitFor(() => expect(link).toBeEnabled());
-  expect(readyToLink).toHaveBeenCalledTimes(1);
-  expect(signed).toHaveLength(0);
-  fireEvent.click(link);
-  await vi.waitFor(() => expect(onSaved).toHaveBeenCalled());
-  expect(onSaved.mock.calls[0]?.[0].links).toEqual([chat]);
-});
-
-it("asks to share a new task's chat only at Create, and saves nothing if declined", async () => {
-  const { session, signed } = setup(async () => "");
-  const readyToLink = vi.fn(async () => "cancelled" as const);
-  render(
-    <TaskView
-      session={session}
-      channel={tasksChannel}
-      task={undefined}
-      newLinks={[chat]}
-      readyToLink={readyToLink}
-      openConversation={() => {}}
-      onSaved={() => {}}
     />,
   );
   fireEvent.change(screen.getByLabelText("Title"), {
     target: { value: "From this chat" },
   });
-  expect(readyToLink).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Create task" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "This chat wasn’t shared, so the task wasn’t saved.",
-  );
-  expect(readyToLink).toHaveBeenCalledWith(chat, expect.any(String));
-  expect(signed).toHaveLength(0);
-});
-
-it("makes the tasks channel only when the community's first task is saved", async () => {
-  const { session, signed } = setup(async () => "");
-  const open = vi.fn(async () => "made");
-  const onSaved = vi.fn();
-  render(
-    <TaskView
-      session={session}
-      channel={{ id: undefined, open }}
-      task={undefined}
-      readyToLink={async () => "shared"}
-      openConversation={() => {}}
-      onSaved={onSaved}
-    />,
-  );
-  fireEvent.change(screen.getByLabelText("Title"), {
-    target: { value: "Just a title" },
-  });
-  expect(open).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Create task" }));
   await vi.waitFor(() => expect(onSaved).toHaveBeenCalled());
-  expect(open).toHaveBeenCalledOnce();
-  expect(signed[0]?.tags).toContainEqual(["h", "made"]);
+  expect(signed).toHaveLength(1);
+  expect(signed[0]?.tags).toContainEqual(["h", home]);
+  expect(signed[0]?.tags).toContainEqual(["op", "create"]);
 });

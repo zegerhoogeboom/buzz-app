@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import {
   checkedFields,
-  filterTasks,
+  isMine,
   type Task,
   TASK_TYPE,
   taskContent,
@@ -10,8 +10,9 @@ import {
 
 const author = "a".repeat(64);
 const editor = "b".repeat(64);
-const chat = "11111111-1111-4111-8111-111111111111";
-const other = "22222222-2222-4222-8222-222222222222";
+const third = "c".repeat(64);
+const id = "11111111-1111-4111-8111-111111111111";
+const home = "22222222-2222-4222-8222-222222222222";
 
 const revision = (content: unknown, tags: string[][] = []) => ({
   id: "e".repeat(64),
@@ -22,8 +23,8 @@ const revision = (content: unknown, tags: string[][] = []) => ({
   content: typeof content === "string" ? content : JSON.stringify(content),
   tags: [
     ["ar", "1"],
-    ["d", "task-1"],
-    ["h", "tasks"],
+    ["d", id],
+    ["h", home],
     ["type", TASK_TYPE],
     ["title", "Fix the header"],
     ["op", "update"],
@@ -31,28 +32,29 @@ const revision = (content: unknown, tags: string[][] = []) => ({
   ],
 });
 
-it("reads a revision as the task it snapshots", () => {
+it("reads a revision as the task it snapshots, in its home", () => {
   const task = taskOf(
     revision({
-      version: 1,
+      version: 2,
       author,
       description: "It clips.",
       status: "in_progress",
       images: [
         { url: "https://example.org/a.png", type: "image/png", dim: "10x20" },
       ],
-      links: [chat, chat, other],
+      assignees: [author, author, third],
     }),
   );
   expect(task).toEqual({
-    id: "task-1",
+    id,
+    home,
     title: "Fix the header",
     description: "It clips.",
     status: "in_progress",
     images: [
       { url: "https://example.org/a.png", type: "image/png", dim: "10x20" },
     ],
-    links: [chat, other],
+    assignees: [author, third],
     author,
     revision: "e".repeat(64),
     editor,
@@ -70,20 +72,45 @@ it("drops what an untrusted record can't safely show", () => {
         { url: "javascript:alert(1)" },
         { url: "https://example.org/b.png", type: "text/html", dim: "big" },
       ],
-      links: ["general", 7, chat],
+      assignees: [
+        "someone",
+        7,
+        "d".repeat(64),
+        "1".repeat(64),
+        "2".repeat(64),
+        "3".repeat(64),
+        "4".repeat(64),
+      ],
     }),
   );
   expect(task?.author).toBe(editor);
-  expect(task?.status).toBe("open");
+  expect(task?.status).toBe("todo");
   expect(task?.images).toEqual([{ url: "https://example.org/b.png" }]);
-  expect(task?.links).toEqual([chat]);
+  expect(task?.assignees).toEqual([
+    "d".repeat(64),
+    "1".repeat(64),
+    "2".repeat(64),
+    "3".repeat(64),
+  ]);
   expect(taskOf(revision("not json"))).toBeUndefined();
   expect(taskOf(revision([]))).toBeUndefined();
+  // A task needs a home; one from the old shared store had none of its own.
   expect(
     taskOf({
       ...revision({}),
       tags: [
-        ["d", "x"],
+        ["d", id],
+        ["h", "tasks"],
+        ["type", TASK_TYPE],
+      ],
+    }),
+  ).toBeUndefined();
+  expect(
+    taskOf({
+      ...revision({}),
+      tags: [
+        ["d", id],
+        ["h", home],
         ["type", "other"],
       ],
     }),
@@ -94,14 +121,14 @@ it("checks fields before saving, with reasons people can act on", () => {
   const fields = {
     title: "  Fix   the header ",
     description: "",
-    status: "open" as const,
+    status: "todo" as const,
     images: [],
-    links: [chat, chat],
+    assignees: [author, author],
   };
   expect(checkedFields(fields)).toEqual({
     ...fields,
     title: "Fix the header",
-    links: [chat],
+    assignees: [author],
   });
   expect(() => checkedFields({ ...fields, title: " " })).toThrow(
     "Give the task a title.",
@@ -109,36 +136,28 @@ it("checks fields before saving, with reasons people can act on", () => {
   expect(() => checkedFields({ ...fields, title: "x".repeat(201) })).toThrow(
     "under 200",
   );
-  expect(JSON.parse(taskContent(fields, author))).toEqual({
-    version: 1,
+  expect(() => checkedFields({ ...fields, assignees: ["someone"] })).toThrow(
+    "Assign people only.",
+  );
+  expect(() =>
+    checkedFields({
+      ...fields,
+      assignees: ["1", "2", "3", "4", "5"].map((n) => n.repeat(64)),
+    }),
+  ).toThrow("up to 4");
+  expect(JSON.parse(taskContent(checkedFields(fields), author))).toEqual({
+    version: 2,
     author,
     description: "",
-    status: "open",
+    status: "todo",
     images: [],
-    links: [chat, chat],
+    assignees: [author],
   });
 });
 
-it("filters by status and by what's mine, newest first", () => {
-  const base = taskOf(revision({ author })) as Task;
-  const task = (id: string, extra: Partial<Task>): Task => ({
-    ...base,
-    id,
-    ...extra,
-  });
-  const tasks = [
-    task("mine", { updatedAt: 1 }),
-    task("linked", { author: editor, links: [chat], updatedAt: 3 }),
-    task("theirs", { author: editor, updatedAt: 2 }),
-    task("done", { status: "wont_do", updatedAt: 4 }),
-  ];
-  const ids = (filter: Parameters<typeof filterTasks>[1]) =>
-    filterTasks(tasks, filter, author, new Set([chat])).map((item) => item.id);
-  expect(ids({ status: "open", mine: false })).toEqual([
-    "linked",
-    "theirs",
-    "mine",
-  ]);
-  expect(ids({ status: "open", mine: true })).toEqual(["linked", "mine"]);
-  expect(ids({ status: "done", mine: false })).toEqual(["done"]);
+it("counts a task as mine when I made it or I'm assigned", () => {
+  const task = taskOf(revision({ author: editor })) as Task;
+  expect(isMine(task, editor)).toBe(true);
+  expect(isMine(task, author)).toBe(false);
+  expect(isMine({ ...task, assignees: [author] }, author)).toBe(true);
 });

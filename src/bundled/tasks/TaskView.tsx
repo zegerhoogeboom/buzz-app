@@ -1,24 +1,23 @@
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
-import type { RelaySession } from "../../features/relay/session";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useChannelReference } from "../../features/conversation/channel-reference";
+import { useIdentityNames } from "../../features/identity-names/react";
 import { DOCUMENT_PROFILE } from "../../features/markdown/document-profile";
 import {
   MarkdownDocument,
   sharedComponents,
 } from "../../features/markdown/MarkdownDocument";
 import { AttachmentImage } from "../../features/messages/AttachmentImage";
-import { useIdentityNames } from "../../features/identity-names/react";
-import { formatPublicKey } from "../../shared/identity/public-key";
-import { relativeTimestamp } from "../../shared/relative-timestamp";
-import { Button } from "../../shared/design-system/ui/Button";
-import { Field } from "../../shared/design-system/ui/Field";
-import { InlineHeader } from "../../shared/design-system/ui/Header";
-import { IconButton } from "../../shared/design-system/ui/IconButton";
-import { Input } from "../../shared/design-system/ui/Input";
-import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
-import { Select } from "../../shared/design-system/ui/Select";
-import { Textarea } from "../../shared/design-system/ui/Textarea";
-import { useToastNotification } from "../../shared/design-system/ui/Toast";
+import type { RelaySession } from "../../features/relay/session";
+import { avatarMedia } from "../../shared/avatar-source";
 import {
   ChatCircleIcon,
   HashIcon,
@@ -27,7 +26,23 @@ import {
   LockIcon,
   XIcon,
 } from "../../shared/design-system/icons/index";
+import { AlertDialog } from "../../shared/design-system/ui/AlertDialog";
+import { AvatarStack } from "../../shared/design-system/ui/AvatarStack";
+import { Button } from "../../shared/design-system/ui/Button";
+import { Combobox } from "../../shared/design-system/ui/Combobox";
+import { Field } from "../../shared/design-system/ui/Field";
+import { InlineHeader } from "../../shared/design-system/ui/Header";
+import { IconButton } from "../../shared/design-system/ui/IconButton";
+import { Input } from "../../shared/design-system/ui/Input";
+import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
+import { Select, type SelectGroup } from "../../shared/design-system/ui/Select";
+import { Textarea } from "../../shared/design-system/ui/Textarea";
+import { useToastNotification } from "../../shared/design-system/ui/Toast";
+import { formatPublicKey } from "../../shared/identity/public-key";
+import { relativeTimestamp } from "../../shared/relative-timestamp";
+import { readLinks, setLink, type TaskLink } from "./links";
 import {
+  MAX_ASSIGNEES,
   statuses,
   statusLabels,
   type Task,
@@ -35,54 +50,49 @@ import {
   type TaskImage,
   type TaskStatus,
 } from "./model";
+import { accessChange, type Place, projectOf } from "./places";
+import { useCanEdit, usePlaces, useTaskHomes } from "./react";
+import { saveTask, type SaveTarget } from "./store";
 import { StatusIcon } from "./StatusIcon";
-import type { TasksChannel } from "./react";
-import { saveTask } from "./store";
-import type { ChatShareOutcome } from "../../features/solo/share-requests";
 import styles from "./Tasks.module.css";
 
 const empty: TaskFields = {
   title: "",
   description: "",
-  status: "open",
+  status: "todo",
   images: [],
-  links: [],
+  assignees: [],
 };
+
 /** An open edit: the text, the revision it builds on, and the task's id. */
 export type TaskDraft = Readonly<{
   fields: TaskFields;
   base: Task | undefined;
   id: string;
+  home: string | undefined;
 }>;
-
-/** A save, or why it stopped before writing: a link the owner didn't share. */
-type ViewSave =
-  | Awaited<ReturnType<typeof saveTask>>
-  | Readonly<{ status: "declined"; outcome: "cancelled" | "unavailable" }>;
-const declined = "Only this chat’s owner can link it to a task.";
 
 const fieldsOf = (task: Task): TaskFields => ({
   title: task.title,
   description: task.description,
   status: task.status,
   images: task.images,
-  links: task.links,
+  assignees: task.assignees,
 });
+
+const message = (reason: unknown, fallback: string) =>
+  reason instanceof Error ? reason.message : fallback;
 
 export type TaskViewProps = {
   session: RelaySession;
-  channel: TasksChannel;
   /** The task's current revision; undefined starts a new task. */
   task: Task | undefined;
+  /** Where a new task starts. */
+  home?: string | undefined;
   /** The conversation this view sits beside, which "Link this chat" links. */
   currentChat?: string | undefined;
-  /** Resolves "shared" once `channelId` may be linked; a private Solo chat
-   * first asks its owner to make it View only. */
-  readyToLink(channelId: string, task: string): Promise<ChatShareOutcome>;
   openConversation(channelId: string): void;
   onSaved(task: Task): void;
-  /** Conversations a new task starts linked to, already cleared to link. */
-  newLinks?: readonly string[] | undefined;
   /** Unsaved edits the list keeps while another task is open. */
   draft?: TaskDraft | undefined;
   onDraftChange?: ((draft: TaskDraft | undefined) => void) | undefined;
@@ -90,68 +100,15 @@ export type TaskViewProps = {
   onDiscard?: (() => void) | undefined;
 };
 
-/** One task: read by default, with an explicit edit mode. Every save names the
- * revision it started from, so a concurrent edit is reported, never lost. */
+/** One task: read by default, with an explicit edit mode. Every save names
+ * the revision it started from, so a concurrent edit is reported, never lost. */
 export function TaskView(props: TaskViewProps) {
-  const { session, channel, task } = props;
-  const notify = useToastNotification();
+  const { session, task } = props;
   const [editing, setEditing] = useState(!task || !!props.draft);
-  const [saving, setSaving] = useState(false);
-  // Consent is asked only as a link is saved, so declining or discarding
-  // never leaves a chat shared with nothing linked to it.
-  const save = async (
-    fields: TaskFields,
-    base: Task | undefined,
-    id?: string,
-  ): Promise<ViewSave> => {
-    setSaving(true);
-    try {
-      for (const added of fields.links.filter(
-        (link) => !base?.links.includes(link),
-      )) {
-        const outcome = await props.readyToLink(added, fields.title);
-        if (outcome !== "shared") return { status: "declined", outcome };
-      }
-      // The community's first saved task makes its tasks channel.
-      const target =
-        channel.id ?? (await channel.open(AbortSignal.timeout(30_000)));
-      const result = await saveTask(
-        session,
-        target,
-        fields,
-        base,
-        undefined,
-        id,
-      );
-      if (result.status === "saved") props.onSaved(result.task);
-      return result;
-    } finally {
-      setSaving(false);
-    }
-  };
-  // Immediate changes in read mode: status and links.
-  const change = async (next: Partial<TaskFields>) => {
-    if (!task || saving) return false;
-    try {
-      const result = await save({ ...fieldsOf(task), ...next }, task);
-      if (result.status === "saved") return true;
-      if (result.status === "conflict")
-        notify("Someone else changed this task. Try again.", "error");
-      else if (result.outcome === "unavailable") notify(declined, "error");
-    } catch (reason) {
-      notify(
-        reason instanceof Error ? reason.message : "Couldn’t save the task.",
-        "error",
-      );
-    }
-    return false;
-  };
   if (editing || !task)
     return (
       <TaskEditor
         {...props}
-        saving={saving}
-        save={save}
         onDone={(saved) => {
           props.onDraftChange?.(undefined);
           setEditing(false);
@@ -159,54 +116,112 @@ export function TaskView(props: TaskViewProps) {
         }}
       />
     );
-  const link = (channelId: string) =>
-    change({ links: [...task.links, channelId] });
-  const unlink = async (channelId: string) => {
-    const solo =
-      session.channels.list().channels.find((item) => item.id === channelId)
-        ?.channelType === "solo";
-    const unlinked = await change({
-      links: task.links.filter((item) => item !== channelId),
-    });
-    // Unlinking never changes access back.
-    if (unlinked && solo)
-      notify(
-        "Unlinked. The chat stays View only. Change that in the chat’s People settings.",
-        "success",
+  return (
+    <TaskDetails
+      {...props}
+      session={session}
+      task={task}
+      edit={() => setEditing(true)}
+    />
+  );
+}
+
+function TaskDetails({
+  session,
+  task,
+  currentChat,
+  openConversation,
+  onSaved,
+  edit,
+}: TaskViewProps & { task: Task; edit(): void }) {
+  const notify = useToastNotification();
+  const canEdit = useCanEdit(session, task.home);
+  const [saving, setSaving] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const places = usePlaces(session, [task.home]);
+  const project = projectOf(task, places);
+  const home = places.get(task.home);
+  // Immediate changes: status and assignees, on the revision shown.
+  const change = async (next: Partial<TaskFields>) => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const result = await saveTask(
+        session,
+        { ...fieldsOf(task), ...next },
+        { op: "update", base: task },
       );
+      if (result.status === "saved") onSaved(result.task);
+      else {
+        onSaved(result.current);
+        notify("Someone else changed this task. Try again.", "error");
+      }
+    } catch (reason) {
+      notify(message(reason, "Couldn’t save the task."), "error");
+    } finally {
+      setSaving(false);
+    }
   };
-  const linkedHere =
-    props.currentChat !== undefined && task.links.includes(props.currentChat);
+  const setStatus = (status: TaskStatus) => {
+    // Starting a task assigns whoever starts it, when there's room.
+    const viewer = session.viewer;
+    const starts =
+      status === "in_progress" &&
+      viewer &&
+      !task.assignees.includes(viewer) &&
+      task.assignees.length < MAX_ASSIGNEES;
+    void change({
+      status,
+      ...(starts ? { assignees: [...task.assignees, viewer] } : {}),
+    });
+  };
   return (
     <article className={styles.task} aria-label={task.title}>
-      <div className={styles.taskHeading}>
-        <h2 className="text-title">{task.title}</h2>
+      <div className={styles.heading}>
+        <h2 className="text-title m-0">{task.title}</h2>
         <TaskByline session={session} task={task} />
+        <p className="text-body-sm text-subtle m-0">
+          {project.id && project.id !== task.home
+            ? `${project.name ?? "Private project"}${home ? ` · ${placeLabel(home)}` : ""}`
+            : home
+              ? placeLabel(home)
+              : ""}
+        </p>
       </div>
-      <div className={styles.taskActions}>
-        <Select
-          label="Status"
-          variant="compact"
-          value={task.status}
-          leading={<StatusIcon status={task.status} />}
-          disabled={saving}
-          groups={[
-            {
-              label: "Status",
-              options: statuses.map((status) => ({
-                value: status,
-                label: statusLabels[status],
-                leading: <StatusIcon status={status} />,
-              })),
-            },
-          ]}
-          onValueChange={(value) =>
-            void change({ status: value as TaskStatus })
-          }
-        />
-        <Button onClick={() => setEditing(true)} disabled={saving}>
-          Edit
-        </Button>
+      <div className={styles.controls}>
+        {canEdit ? (
+          <>
+            <Select
+              label="Status"
+              variant="compact"
+              value={task.status}
+              leading={<StatusIcon status={task.status} />}
+              disabled={saving}
+              groups={statusGroups}
+              onValueChange={(value) => setStatus(value as TaskStatus)}
+            />
+            <AssigneePicker
+              session={session}
+              home={task.home}
+              assignees={task.assignees}
+              disabled={saving}
+              onChange={(assignees) => void change({ assignees })}
+            />
+            <Button size="sm" disabled={saving} onClick={edit}>
+              Edit
+            </Button>
+            <Button size="sm" disabled={saving} onClick={() => setMoving(true)}>
+              Move…
+            </Button>
+          </>
+        ) : (
+          <>
+            <span className="text-body-sm">
+              <StatusIcon status={task.status} /> {statusLabels[task.status]}
+            </span>
+            <Assignees session={session} assignees={task.assignees} />
+          </>
+        )}
       </div>
       {task.description.trim() ? (
         <MarkdownDocument
@@ -217,67 +232,200 @@ export function TaskView(props: TaskViewProps) {
           capabilities={{ session }}
         />
       ) : (
-        <p className="text-body-sm text-subtle">No description.</p>
+        <p className="text-body-sm text-subtle m-0">No description.</p>
       )}
       {task.images.length > 0 && (
         <TaskImages session={session} images={task.images} />
       )}
-      <section className={styles.section} aria-labelledby={`${task.id}-links`}>
-        <InlineHeader id={`${task.id}-links`} title="Linked conversations" />
-        {task.links.length ? (
-          <ul className={styles.rows}>
-            {task.links.map((channelId) => (
-              <li key={channelId} className={styles.linkRow}>
-                <LinkedConversation
-                  session={session}
-                  channelId={channelId}
-                  open={() => props.openConversation(channelId)}
-                />
-                <IconButton
-                  size="sm"
-                  variant="ghost"
-                  aria-label="Unlink"
-                  icon={<XIcon size={16} aria-hidden="true" />}
-                  disabled={saving}
-                  onClick={() => void unlink(channelId)}
-                />
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-body-sm text-subtle">
-            No conversations are linked yet.
-          </p>
+      <LinkedConversations
+        session={session}
+        task={task}
+        currentChat={currentChat}
+        openConversation={openConversation}
+      />
+      <section className={styles.section} aria-labelledby={`${task.id}-talk`}>
+        <InlineHeader id={`${task.id}-talk`} title="Comments" />
+        {canEdit ? null : (
+          <p className="text-body-sm text-subtle m-0">Read-only access</p>
         )}
-        {props.currentChat && !linkedHere ? (
-          <div className={styles.actionRow}>
-            <Button
-              disabled={saving}
-              onClick={() => void link(props.currentChat as string)}
-            >
-              <LinkIcon size={16} aria-hidden="true" />
-              Link this chat
-            </Button>
-          </div>
-        ) : null}
       </section>
+      {moving ? (
+        <MoveTask
+          session={session}
+          task={task}
+          onClose={() => setMoving(false)}
+          onMoved={(moved) => {
+            setMoving(false);
+            onSaved(moved);
+          }}
+        />
+      ) : null}
     </article>
   );
 }
 
-function TaskByline({ session, task }: { session: RelaySession; task: Task }) {
+const statusGroups: readonly SelectGroup[] = [
+  {
+    label: "Status",
+    options: statuses.map((status) => ({
+      value: status,
+      label: statusLabels[status],
+      leading: <StatusIcon status={status} />,
+    })),
+  },
+];
+
+/** Profiles for `pubkeys`, read in the background and kept current. */
+function usePeople(session: RelaySession, pubkeys: readonly string[]) {
+  const key = pubkeys.join(",");
+  useEffect(() => {
+    if (key)
+      void session.profiles
+        .ensure(key.split(","), "background")
+        .catch(() => {});
+  }, [session, key]);
+  const snapshot = useSyncExternalStore(
+    session.profiles.subscribe,
+    session.profiles.snapshot,
+    session.profiles.snapshot,
+  );
   const name = useIdentityNames(session.names);
-  const label = (pubkey: string) =>
-    pubkey === session.viewer
-      ? "you"
-      : name(
-          pubkey,
-          session.profiles.snapshot().get(pubkey)?.name ??
-            formatPublicKey(pubkey) ??
-            "someone",
-        );
+  return useCallback(
+    (pubkey: string) => {
+      const profile = snapshot.get(pubkey);
+      return {
+        id: pubkey,
+        name:
+          pubkey === session.viewer
+            ? "You"
+            : name(
+                pubkey,
+                profile?.name ?? formatPublicKey(pubkey) ?? "Someone",
+              ),
+        src: avatarMedia(profile?.picture, session.media),
+        isAgent: !!profile?.isAgent,
+      };
+    },
+    [snapshot, name, session],
+  );
+}
+
+function Assignees({
+  session,
+  assignees,
+}: {
+  session: RelaySession;
+  assignees: readonly string[];
+}) {
+  const person = usePeople(session, assignees);
+  const people = assignees.map(person);
+  if (!people.length)
+    return <span className="text-body-sm text-subtle">Nobody assigned</span>;
   return (
-    <p className="text-body-sm text-subtle">
+    <span className="text-body-sm">
+      <AvatarStack
+        size="small"
+        max={MAX_ASSIGNEES}
+        items={people.map((item) => ({ ...item, shape: "circle" }))}
+      />{" "}
+      {people.map((item) => item.name).join(", ")}
+    </span>
+  );
+}
+
+type Person = ReturnType<ReturnType<typeof usePeople>>;
+
+/** Up to four people, chosen from the people of the task's home. Agents
+ * are never offered: a person always answers for the work. */
+function AssigneePicker({
+  session,
+  home,
+  assignees,
+  disabled,
+  onChange,
+}: {
+  session: RelaySession;
+  home: string;
+  assignees: readonly string[];
+  disabled: boolean;
+  onChange(assignees: readonly string[]): void;
+}) {
+  const homes = useTaskHomes(session);
+  const members = homes.find((item) => item.id === home)?.members;
+  const pubkeys = useMemo(
+    () => [...new Set([...assignees, ...(members ?? [])])],
+    [assignees, members],
+  );
+  const person = usePeople(session, pubkeys);
+  const [search, setSearch] = useState("");
+  // Stable between renders: the combobox syncs its selection to these.
+  const people = useMemo(
+    () =>
+      pubkeys
+        .map(person)
+        .filter((item) => !item.isAgent || assignees.includes(item.id)),
+    [pubkeys, person, assignees],
+  );
+  const chosen = useMemo(
+    () => people.filter((item) => assignees.includes(item.id)),
+    [people, assignees],
+  );
+  const full = chosen.length >= MAX_ASSIGNEES;
+  return (
+    <Combobox.Root<Person, true>
+      multiple
+      items={people}
+      value={chosen}
+      itemToStringLabel={(item) => item.name}
+      itemToStringValue={(item) => item.id}
+      isItemEqualToValue={(a, b) => a.id === b.id}
+      inputValue={search}
+      onInputValueChange={setSearch}
+      onOpenChange={(open) => open && setSearch("")}
+      disabled={disabled}
+      onValueChange={(next) => {
+        if (next.length <= MAX_ASSIGNEES) onChange(next.map((item) => item.id));
+      }}
+    >
+      <Combobox.Trigger label="Assignees" disabled={disabled}>
+        {chosen.length ? (
+          <AvatarStack
+            size="mini"
+            max={MAX_ASSIGNEES}
+            items={chosen.map((item) => ({ ...item, shape: "circle" }))}
+          />
+        ) : (
+          "Nobody assigned"
+        )}
+      </Combobox.Trigger>
+      <Combobox.Popup search size="compact" empty="No one here matches.">
+        <Combobox.List>
+          {(item: Person) => (
+            <Combobox.Item
+              key={item.id}
+              value={item}
+              disabled={full && !assignees.includes(item.id)}
+              description={
+                full && !assignees.includes(item.id)
+                  ? `Up to ${MAX_ASSIGNEES} people`
+                  : undefined
+              }
+            >
+              {item.name}
+            </Combobox.Item>
+          )}
+        </Combobox.List>
+      </Combobox.Popup>
+    </Combobox.Root>
+  );
+}
+
+function TaskByline({ session, task }: { session: RelaySession; task: Task }) {
+  const person = usePeople(session, [task.author, task.editor]);
+  const label = (pubkey: string) =>
+    pubkey === session.viewer ? "you" : person(pubkey).name;
+  return (
+    <p className="text-body-sm text-subtle m-0">
       Created by {label(task.author)} · Updated{" "}
       {relativeTimestamp(task.updatedAt * 1000)} by {label(task.editor)}
     </p>
@@ -327,8 +475,95 @@ function TaskImages({
   );
 }
 
-/** A linked conversation as the viewer may see it: its name when readable,
- * "Private channel" with no name when not. */
+/** Conversations linked to the task that the viewer can read. A link lives
+ * with its conversation, so nobody learns of a link they can't read. */
+function LinkedConversations({
+  session,
+  task,
+  currentChat,
+  openConversation,
+}: {
+  session: RelaySession;
+  task: Task;
+  currentChat: string | undefined;
+  openConversation(channelId: string): void;
+}) {
+  const notify = useToastNotification();
+  const [links, setLinks] = useState<readonly TaskLink[]>();
+  const [busy, setBusy] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a change is a new read.
+  useEffect(() => {
+    const controller = new AbortController();
+    readLinks(session, { task: task.id }, controller.signal).then(
+      (read) => !controller.signal.aborted && setLinks(read),
+      () => !controller.signal.aborted && setLinks([]),
+    );
+    return () => controller.abort();
+  }, [session, task.id, attempt]);
+  const toggle = async (conversation: string, linked: boolean) => {
+    setBusy(true);
+    try {
+      await setLink(
+        session,
+        task.id,
+        conversation,
+        linked,
+        AbortSignal.timeout(20_000),
+      );
+      setAttempt((count) => count + 1);
+    } catch (reason) {
+      notify(message(reason, "Couldn’t change the link."), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const linkedHere =
+    !!currentChat && !!links?.some((link) => link.conversation === currentChat);
+  return (
+    <section className={styles.section} aria-labelledby={`${task.id}-links`}>
+      <InlineHeader id={`${task.id}-links`} title="Linked conversations" />
+      {links?.length ? (
+        <ul className={styles.rows}>
+          {links.map((link) => (
+            <li key={link.id} className={styles.linkRow}>
+              <LinkedConversation
+                session={session}
+                channelId={link.conversation}
+                open={() => openConversation(link.conversation)}
+              />
+              <IconButton
+                size="sm"
+                variant="ghost"
+                aria-label="Unlink"
+                icon={<XIcon size={16} aria-hidden="true" />}
+                disabled={busy}
+                onClick={() => void toggle(link.conversation, false)}
+              />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-body-sm text-subtle m-0">
+          {links ? "No conversations you can see are linked." : "Loading…"}
+        </p>
+      )}
+      {currentChat && links && !linkedHere ? (
+        <div className={styles.actions}>
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => void toggle(currentChat, true)}
+          >
+            <LinkIcon size={16} aria-hidden="true" />
+            Link this chat
+          </Button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function LinkedConversation({
   session,
   channelId,
@@ -341,96 +576,203 @@ function LinkedConversation({
   const reference = useChannelReference(session.channels, channelId);
   let icon: ReactNode = <HashIcon size={16} aria-hidden="true" />;
   let label = "Loading…";
-  let trailing: string | undefined;
   if (reference.state === "found") {
     const solo = reference.channelType === "solo";
-    icon = solo ? (
-      <ChatCircleIcon size={16} aria-hidden="true" />
-    ) : (
-      <HashIcon size={16} aria-hidden="true" />
-    );
-    label = reference.name || (solo ? "Solo chat" : "Channel");
-    trailing = solo ? "Solo chat" : "Channel";
+    if (solo) icon = <ChatCircleIcon size={16} aria-hidden="true" />;
+    label = reference.name || (solo ? "Chat" : "Channel");
   } else if (reference.state === "withheld") {
     icon = <LockIcon size={16} aria-hidden="true" />;
     label = "Private channel";
-    trailing = "No access";
   }
-  const readable = reference.state === "found" && reference.readable !== false;
   return (
     <NavigationItem
       icon={icon}
       label={label}
-      trailing={trailing}
-      disabled={!readable}
+      disabled={reference.state !== "found" || reference.readable === false}
       onClick={open}
     />
+  );
+}
+
+/** Where a task can go: the places the viewer can post in, by name. */
+function homeGroups(
+  homes: readonly { id: string; name: string; channelType?: string }[],
+  except?: string,
+): readonly SelectGroup[] {
+  const options = (kind: "chat" | "channel") =>
+    homes
+      .filter((item) => item.id !== except)
+      .filter((item) => (item.channelType === "solo") === (kind === "chat"))
+      .map((item) => ({ value: item.id, label: item.name || "Untitled" }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  return [
+    { label: "Channels", options: options("channel") },
+    { label: "Chats", separator: true, options: options("chat") },
+  ].filter((group) => group.options.length);
+}
+
+const placeLabel = (place: Place) =>
+  place.kind === "chat" ? place.name : `#${place.name}`;
+const placeList = (list: readonly Place[]) => list.map(placeLabel).join(", ");
+
+/** Moving one task: choose where, then confirm whose access changes, by
+ * place. The task's comments go with it. */
+function MoveTask({
+  session,
+  task,
+  onClose,
+  onMoved,
+}: {
+  session: RelaySession;
+  task: Task;
+  onClose(): void;
+  onMoved(task: Task): void;
+}) {
+  const homes = useTaskHomes(session);
+  const groups = homeGroups(homes, task.home);
+  const [to, setTo] = useState<string>();
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  const places = usePlaces(session, to ? [task.home, to] : [task.home]);
+  const change = to ? accessChange(task.home, to, places) : undefined;
+  const move = async () => {
+    if (!to) return;
+    setPending(true);
+    setError("");
+    try {
+      const result = await saveTask(session, fieldsOf(task), {
+        op: "move",
+        base: task,
+        home: to,
+      });
+      if (result.status === "saved") onMoved(result.task);
+      else setError("Someone else changed this task. Close and try again.");
+    } catch (reason) {
+      setError(message(reason, "Couldn’t move the task."));
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <AlertDialog
+      title="Move task"
+      description="Choose where this task lives. Who can see it, and its comments, comes from there."
+      pending={pending}
+      onClose={onClose}
+      actions={
+        <>
+          <Button disabled={pending} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="prominent"
+            loading={pending}
+            disabled={!to || pending}
+            onClick={() => void move()}
+          >
+            Move
+          </Button>
+        </>
+      }
+    >
+      {groups.length ? (
+        <Select
+          label="Move to"
+          variant="field"
+          value={to ?? ""}
+          placeholder="Choose a place"
+          groups={groups}
+          onValueChange={setTo}
+        />
+      ) : (
+        <p className="text-body-sm m-0">
+          There’s nowhere else you can post in to move this task.
+        </p>
+      )}
+      {change?.gain.length ? (
+        <p className="text-body-sm m-0">
+          Everyone in {placeList(change.gain)} will be able to see this task and
+          its comments.
+        </p>
+      ) : null}
+      {change?.lose.length ? (
+        <p className="text-body-sm m-0">
+          People who are only in {placeList(change.lose)} will lose access.
+        </p>
+      ) : null}
+      {error ? (
+        <p role="alert" className="buzz-field-error m-0">
+          {error}
+        </p>
+      ) : null}
+    </AlertDialog>
   );
 }
 
 function TaskEditor({
   session,
   task,
-  newLinks,
+  home: startHome,
   draft: kept,
   onDraftChange,
-  saving,
-  save,
+  onSaved,
   onDone,
-}: TaskViewProps & {
-  saving: boolean;
-  save(
-    fields: TaskFields,
-    base: Task | undefined,
-    id?: string,
-  ): Promise<ViewSave>;
-  onDone(saved: boolean): void;
-}) {
+}: TaskViewProps & { onDone(saved: boolean): void }) {
   const inputId = useId();
+  const homes = useTaskHomes(session);
   const [draft, setDraft] = useState<TaskFields>(
-    kept?.fields ??
-      (task ? fieldsOf(task) : { ...empty, links: newLinks ?? [] }),
+    kept?.fields ?? (task ? fieldsOf(task) : empty),
   );
+  const [home, setHome] = useState(kept?.home ?? startHome);
   // The revision this draft builds on; a conflict moves it to theirs.
   const [base, setBase] = useState(kept ? kept.base : task);
   // One id for a new task across retries, so a create that landed unseen
   // is found rather than made twice.
   const [taskId] = useState(() => kept?.id ?? task?.id ?? crypto.randomUUID());
   useEffect(
-    () => onDraftChange?.({ fields: draft, base, id: taskId }),
-    [draft, base, taskId, onDraftChange],
+    () => onDraftChange?.({ fields: draft, base, id: taskId, home }),
+    [draft, base, taskId, home, onDraftChange],
   );
-  const [conflict, setConflict] = useState<{ theirs: Task }>();
+  const [conflict, setConflict] = useState<Task>();
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const files = useRef<HTMLInputElement>(null);
+  const groups = useMemo(() => homeGroups(homes), [homes]);
+  // Only a place the viewer can post in can take a new task.
+  const where = homes.some((item) => item.id === home) ? home : undefined;
   const update = (next: Partial<TaskFields>) =>
     setDraft((current) => ({ ...current, ...next }));
   const submit = async () => {
+    const target: SaveTarget | undefined = base
+      ? { op: "update", base }
+      : where
+        ? { op: "create", home: where, id: taskId }
+        : undefined;
+    if (!target) {
+      setError("Choose where this task lives.");
+      return;
+    }
     setError("");
+    setSaving(true);
     try {
-      const result = await save(draft, base, taskId);
-      if (result.status === "saved") onDone(true);
-      else if (result.status === "declined")
-        setError(
-          result.outcome === "unavailable"
-            ? declined
-            : "This chat wasn’t shared, so the task wasn’t saved.",
-        );
-      else {
+      const result = await saveTask(session, draft, target);
+      if (result.status === "saved") {
+        onSaved(result.task);
+        onDone(true);
+      } else {
         // Keep the person's text; the next Save is a deliberate overwrite.
-        setConflict({ theirs: result.current });
+        setConflict(result.current);
         setBase(result.current);
       }
     } catch (reason) {
-      setError(
-        reason instanceof Error ? reason.message : "Couldn’t save the task.",
-      );
+      setError(message(reason, "Couldn’t save the task."));
+    } finally {
+      setSaving(false);
     }
   };
   const upload = async (list: FileList | null) => {
-    // Media access is community-wide; the tasks channel's roster need not
-    // include the viewer, and saving the task is the guarded write.
+    // Media access is community-wide; saving the task is the guarded write.
     const uploadImage = session.attachments?.uploadForNewChat;
     const chosen = [...(list ?? [])].filter((file) =>
       file.type.startsWith("image/"),
@@ -481,15 +823,15 @@ function TaskEditor({
       }}
     >
       {conflict ? (
-        <div role="alert" className={styles.notice}>
-          <p className="text-body-sm">
+        <div role="alert" className={styles.actions}>
+          <p className="buzz-field-error m-0">
             Someone else changed this task. Your text is kept. Saving now
             replaces their version.
           </p>
           <Button
             size="sm"
             onClick={() => {
-              setDraft(fieldsOf(conflict.theirs));
+              setDraft(fieldsOf(conflict));
               setConflict(undefined);
             }}
           >
@@ -505,9 +847,20 @@ function TaskEditor({
           onChange={(event) => update({ title: event.target.value })}
         />
       </Field>
+      {task ? null : (
+        <Select
+          label="Where it lives"
+          variant="field"
+          description="People who can see this place can see the task."
+          value={where ?? ""}
+          placeholder="Choose a place"
+          groups={groups}
+          onValueChange={setHome}
+        />
+      )}
       <Field
         label="Description"
-        description="Markdown. Write down what you noticed and why it matters."
+        description="Markdown. Write it so someone who can’t read this conversation can pick it up."
       >
         <Textarea
           rows={8}
@@ -540,7 +893,7 @@ function TaskEditor({
           {error}
         </p>
       ) : null}
-      <div className={styles.actionRow}>
+      <div className={styles.actions}>
         <Button
           disabled={busy}
           loading={uploading}
@@ -557,7 +910,7 @@ function TaskEditor({
           type="submit"
           variant="prominent"
           loading={saving}
-          disabled={busy}
+          disabled={busy || !draft.title.trim()}
         >
           {task ? "Save" : "Create task"}
         </Button>
