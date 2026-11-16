@@ -9,6 +9,7 @@ import {
 } from "../../features/conversation/Conversation";
 import type { ConversationHostServices } from "../../features/conversation/ConversationHost";
 import { MessageManagementStatus } from "../../features/messages/MessageManagement";
+import { BANNED } from "../../features/relay/channel-access";
 import { useChannelWindow } from "../../features/relay/react";
 import type { RelaySession } from "../../features/relay/session";
 import { Button } from "../../shared/design-system/ui/Button";
@@ -86,6 +87,12 @@ export function TaskComments({
         Loading comments…
       </p>
     );
+  // A ban is the relay's answer, not a failure: nothing to try again.
+  if (
+    reason === "banned" ||
+    (home.state.status === "unavailable" && home.state.reason === "banned")
+  )
+    return <p className="text-body-sm text-subtle m-0">{BANNED}</p>;
   // Either question going unanswered is a failure to show, never "no
   // comments yet": the home's answer decides who may start them.
   const homeFailed =

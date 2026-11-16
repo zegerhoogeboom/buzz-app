@@ -168,3 +168,17 @@ it("says so where the community has no task comments", () => {
     screen.getByText("Comments aren’t available in this community yet."),
   ).toBeInTheDocument();
 });
+
+it("says plainly that a banned viewer is banned, with nothing to retry", async () => {
+  const { handles, view } = setup();
+  view();
+  await answer(handles, conversation, {
+    status: "unavailable",
+    reason: "banned",
+  });
+  await answer(handles, home, { status: "unavailable", reason: "banned" });
+  expect(
+    screen.getByText("You’re banned from this community."),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button")).toBeNull();
+});
