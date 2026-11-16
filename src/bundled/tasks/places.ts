@@ -125,7 +125,10 @@ export async function readReaders(
   return { anyone: false, people };
 }
 
-/** The places named by `ids`, and the projects they are filed in. */
+/** The places named by `ids`, and the projects they are filed in. This
+ * loads one parent level, which is all nesting goes today; a deeper place
+ * resolves as if shut off above that level, so access fails closed. Extend
+ * it if nesting gets deeper. */
 export async function readPlaces(
   session: Pick<RelaySession, "snapshotRead" | "relayAuthor">,
   ids: Iterable<string>,

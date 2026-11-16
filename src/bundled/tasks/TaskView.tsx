@@ -59,6 +59,7 @@ import {
 } from "./model";
 import {
   accessChange,
+  canHoldTasks,
   type Place,
   placeLabel,
   projectOf,
@@ -871,7 +872,12 @@ function TaskEditor({
   const [draft, setDraft] = useState<TaskFields>(
     kept?.fields ?? (task ? fieldsOf(task) : empty),
   );
-  const [home, setHome] = useState(kept?.home ?? startHome);
+  const [picked, setHome] = useState(kept?.home ?? startHome);
+  const startPlaces = usePlaces(session, picked ? [picked] : []);
+  const chosen = picked ? startPlaces.get(picked) : undefined;
+  // The store's rule for where a task can live: from a DM or a huddle, the
+  // place starts empty and must be chosen.
+  const home = chosen && !canHoldTasks(chosen) ? undefined : picked;
   // The revision this draft builds on; a conflict moves it to theirs.
   const [base, setBase] = useState(kept ? kept.base : task);
   // One id for a new task across retries, so a create that landed unseen
@@ -888,8 +894,6 @@ function TaskEditor({
   const files = useRef<HTMLInputElement>(null);
   // Only a place the relay says the viewer can post in takes a new task.
   const target = usePlaceAccess(session, task ? undefined : home);
-  const startPlaces = usePlaces(session, home ? [home] : []);
-  const chosen = home ? startPlaces.get(home) : undefined;
   const problem =
     !task && home
       ? placeProblem(
@@ -1011,6 +1015,7 @@ function TaskEditor({
           description="People who can see this place can see the task."
           value={home ?? ""}
           placeholder="Choose a place"
+          required
           groups={choices.groups}
           onValueChange={setHome}
         />
@@ -1077,7 +1082,7 @@ function TaskEditor({
           type="submit"
           variant="prominent"
           loading={saving}
-          disabled={busy || !draft.title.trim()}
+          disabled={busy || !draft.title.trim() || (!task && !where)}
         >
           {task ? "Save" : "Create task"}
         </Button>

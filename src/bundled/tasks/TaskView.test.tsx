@@ -35,6 +35,7 @@ const theirs = revision("c".repeat(64), "Their title");
 const project = "33333333-3333-4333-8333-333333333333";
 const launch = "44444444-4444-4444-8444-444444444444";
 const leo = "c".repeat(64);
+const dm = "55555555-5555-4555-8555-555555555555";
 
 type Answer = ChannelReachState;
 const asking: Answer = { status: "loading" };
@@ -64,7 +65,13 @@ function setup(
     created_at: 1,
     kind: 39000,
     content: "",
-    tags: [["d", d], ["name", name], ["private"], ...extra],
+    tags: [
+      ["d", d],
+      ["name", name],
+      ["t", extra.find(([key]) => key === "t")?.[1] ?? "stream"],
+      ["private"],
+      ...extra.filter(([key]) => key !== "t"),
+    ],
   });
   const session = {
     viewer,
@@ -95,6 +102,7 @@ function setup(
           metadata(home, "design", [["parent", project]]),
           metadata(project, "Payments"),
           metadata(launch, "launch"),
+          metadata(dm, "", [["t", "dm"]]),
         ].filter((event) =>
           (filter["#d"] as string[]).includes(event.tags[0]?.[1] ?? ""),
         );
@@ -265,5 +273,29 @@ it("won't create a task where the relay says the viewer can't post", async () =>
   );
   fireEvent.click(screen.getByRole("button", { name: "Create task" }));
   await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(signed).toHaveLength(0);
+});
+
+it("starts a new task from a DM with no place, and won't create until one is picked", async () => {
+  const { session, signed } = setup(async () => "", {
+    [home]: opened(true),
+    [dm]: opened(true),
+  });
+  render(
+    <TaskView
+      session={session}
+      task={undefined}
+      home={dm}
+      openConversation={() => {}}
+      onSaved={() => {}}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Title"), {
+    target: { value: "From a DM" },
+  });
+  const create = screen.getByRole("button", { name: "Create task" });
+  await vi.waitFor(() => expect(create).toBeDisabled());
+  expect(screen.getByText("Choose a place")).toBeInTheDocument();
+  fireEvent.click(create);
   expect(signed).toHaveLength(0);
 });

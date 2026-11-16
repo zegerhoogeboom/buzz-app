@@ -3,11 +3,13 @@ import type {
   ChannelLauncherProps,
   PanelProps,
 } from "../../features/panels/service";
+import { useChannelRoster } from "../../features/relay/react";
 import type { RelaySnapshot } from "../../features/relay/service";
 import type { PluginModule } from "../../plugins/api";
 import { ClipboardCheckIcon } from "../../shared/design-system/icons/index";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import inlineStyles from "../../shared/InlineReference.module.css";
+import { canHoldTasks } from "./places";
 import { taskLinkId, taskRoute } from "./route";
 import { TaskLink } from "./TaskLink";
 import { TasksPage } from "./TasksPage";
@@ -74,6 +76,20 @@ export const apply: PluginModule["apply"] = (ctx) => {
     pressed,
     available,
   }: ChannelLauncherProps) {
+    const state = useSyncExternalStore(ctx.relay.subscribe, ctx.relay.snapshot);
+    const { channels } = useChannelRoster(state.session.channels);
+    const channel =
+      state.scope === context.scope
+        ? channels.find((item) => item.id === context.channelId)
+        : undefined;
+    // No task can live in a DM or a huddle, so their panel could only be
+    // empty. An archived place keeps it: its tasks are still there to read.
+    if (
+      channel &&
+      !channel.pending &&
+      !canHoldTasks({ type: channel.channelType, huddle: channel.huddle })
+    )
+      return null;
     return (
       <IconButton
         size="sm"

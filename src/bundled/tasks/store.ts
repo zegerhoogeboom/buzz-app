@@ -18,6 +18,7 @@ import {
   taskOf,
   taskTags,
 } from "./model";
+import { canHoldTasks, readPlaces } from "./places";
 
 export type TasksState = Readonly<{
   status: "loading" | "live" | "error";
@@ -208,6 +209,9 @@ export type SaveTarget =
  * keeps one `id` across retries, so a create that landed unseen is found, not
  * made twice. Whatever the save reads back, to see whose revision won, comes
  * through `reader` alone: an agent's tool passes the agent's own reads. */
+export const NOT_A_TASK_PLACE =
+  "A task can live in a project, channel or chat that isn’t archived, never a DM or a huddle. Nothing was saved.";
+
 export async function saveTask(
   session: RelaySession,
   reader: TaskSource,
@@ -226,6 +230,13 @@ export async function saveTask(
   // The signer of the first revision, carried forward as the relay checks.
   const creator = base ? base.creator : viewer;
   const via = base ? base.via : target.op === "create" ? target.via : undefined;
+  // Every screen and tool creates and moves through here, so this is where
+  // the rule for where a task can live is kept.
+  if (target.op !== "update") {
+    const place = (await readPlaces(reader, [home], signal)).get(home);
+    if (!place) throw new Error("You can’t see that place. Nothing was saved.");
+    if (!canHoldTasks(place)) throw new Error(NOT_A_TASK_PLACE);
+  }
   const event = await writer.sign(
     {
       kind: ARTIFACT_KIND,

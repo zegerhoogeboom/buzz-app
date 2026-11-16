@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import { PublishRejected } from "../../features/relay/outbox";
 import type { RelaySession } from "../../features/relay/session";
 import { TASK_TYPE, type Task, type TaskFields, taskOf } from "./model";
-import { readTask, saveTask } from "./store";
+import { NOT_A_TASK_PLACE, readTask, saveTask } from "./store";
 
 const viewer = "a".repeat(64);
 const id = "11111111-1111-4111-8111-111111111111";
@@ -32,6 +32,28 @@ const head = (revision: string, content: object = {}, at = home) => ({
   ],
 });
 
+const relayKey = "e".repeat(64);
+const dm = "44444444-4444-4444-8444-444444444444";
+const huddle = "55555555-5555-4555-8555-555555555555";
+const place = (d: string, more: string[][] = [["t", "stream"]]) => ({
+  id: d.replace(/-/g, "").padEnd(64, "0"),
+  pubkey: relayKey,
+  sig: "",
+  created_at: 5,
+  kind: 39000,
+  content: "",
+  tags: [["d", d], ["name", d.slice(0, 4)], ["private"], ...more],
+});
+const places = [
+  place(home),
+  place(away),
+  place(dm, [["t", "dm"]]),
+  place(huddle, [
+    ["t", "stream"],
+    ["about", `Buzz Huddle (buzz.huddles/v1)\nparent:${home}`],
+  ]),
+];
+
 function session(publish: () => Promise<string>, heads: object[] = []) {
   const sign = vi.fn(async (template: object) => ({
     ...template,
@@ -39,12 +61,20 @@ function session(publish: () => Promise<string>, heads: object[] = []) {
     pubkey: viewer,
     sig: "",
   }));
-  const read = vi.fn(async () => heads);
+  const read = vi.fn(
+    async (filters: { kinds?: number[]; "#d"?: string[] }[]) =>
+      filters[0]?.kinds?.includes(39000)
+        ? places.filter((event) =>
+            filters[0]?.["#d"]?.includes(event.tags[0]?.[1] ?? ""),
+          )
+        : heads,
+  );
   return {
     sign,
     read,
     session: {
       viewer,
+      relayAuthor: relayKey,
       snapshotRead: read,
       configArtifactWriter: { sign, publish: vi.fn(publish) },
     } as unknown as RelaySession,
@@ -164,4 +194,25 @@ it("finds a moved task when its old home no longer has it", async () => {
     expect.objectContaining({ "#h": [home], "#d": [id] }),
   ]);
   expect(read.mock.calls[1]?.[0]?.[0]).not.toHaveProperty("#h");
+});
+
+it("never creates or moves a task into a DM or a huddle, whoever calls", async () => {
+  const { session: relay, sign } = session(async () => "");
+  const base = taskOf(head("d".repeat(64))) as Task;
+  for (const place of [dm, huddle]) {
+    await expect(
+      saveTask(relay, relay, fields, { op: "create", home: place, id }),
+    ).rejects.toThrow(NOT_A_TASK_PLACE);
+    await expect(
+      saveTask(relay, relay, fields, { op: "move", base, home: place }),
+    ).rejects.toThrow(NOT_A_TASK_PLACE);
+  }
+  await expect(
+    saveTask(relay, relay, fields, {
+      op: "create",
+      home: "66666666-6666-4666-8666-666666666666",
+      id,
+    }),
+  ).rejects.toThrow("You can’t see that place.");
+  expect(sign).not.toHaveBeenCalled();
 });
