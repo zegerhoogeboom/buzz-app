@@ -392,6 +392,21 @@
     display: flex;
     flex-shrink: 0;
   }
+  /* Artwork in a compact value, such as a Combobox trigger's avatar stack,
+     aligns to the line box instead of the text baseline, so the trigger keeps
+     the compact Select's height. Identity artwork tucks toward the leading
+     edge, as small identity buttons do. */
+  .buzz-select[data-variant="compact"]
+    .buzz-select-value
+    > :is([data-avatar-stack], svg) {
+    vertical-align: top;
+  }
+  .buzz-select[data-variant="compact"]
+    .buzz-button[data-size="sm"]:has(
+      .buzz-select-value > [data-avatar-stack]:first-child
+    ) {
+    padding-inline-start: var(--space-1h);
+  }
   .buzz-select-popup[data-variant="compact"] {
     min-width: min(
       max(var(--anchor-width), 11.25rem),

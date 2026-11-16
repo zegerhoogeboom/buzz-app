@@ -14,6 +14,7 @@ import { Select } from "../../../../src/shared/design-system/ui/Select";
 import { PreferenceRow } from "../../../../src/shared/design-system/ui/PreferenceRow";
 import { SettingsGroup } from "../../../../src/shared/design-system/ui/SettingsGroup";
 import { Combobox } from "../../../../src/shared/design-system/ui/Combobox";
+import { AvatarStack } from "../../../../src/shared/design-system/ui/AvatarStack";
 import { Button } from "../../../../src/shared/design-system/ui/Button";
 
 import { IconButton } from "../../../../src/shared/design-system/ui/IconButton";
@@ -787,7 +788,19 @@ function CompactTriggerExample() {
         onValueChange={setChosen}
       >
         <Combobox.Trigger variant="compact" label="Assignees">
-          {chosen.length ? chosen.map((name) => name[0]).join(", ") : "Nobody"}
+          {chosen.length ? (
+            <AvatarStack
+              size="mini"
+              max={4}
+              items={chosen.map((name) => ({
+                id: name,
+                name,
+                shape: "circle",
+              }))}
+            />
+          ) : (
+            "Nobody"
+          )}
         </Combobox.Trigger>
         <Combobox.Popup search size="compact" empty="No one here matches.">
           <Combobox.List>
@@ -828,7 +841,7 @@ ${workspaceComboboxCode}`}
         title="Compact trigger"
         description="In a row of compact controls, the trigger matches a compact Select and announces its label. The menu keeps a minimum width, so short triggers never squeeze names."
         code={`<Combobox.Trigger variant="compact" label="Assignees">
-  {initials}
+  <AvatarStack size="mini" items={assignees} />
 </Combobox.Trigger>`}
       >
         <CompactTriggerExample />
