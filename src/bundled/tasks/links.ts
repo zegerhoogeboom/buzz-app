@@ -70,7 +70,7 @@ export async function readLinks(
 
 /** The link's head, including a deletion, or undefined when it never was. */
 async function head(
-  session: RelaySession,
+  session: Pick<RelaySession, "snapshotRead">,
   id: string,
   conversation: string,
   signal: AbortSignal,
@@ -94,9 +94,10 @@ async function head(
 
 /** Links `task` to `conversation`, or with `unlink` removes the link. Only
  * people who can post in the conversation can. Doing what is already done
- * succeeds. */
+ * succeeds. The link's current state is read through `reader` alone. */
 export async function setLink(
   session: RelaySession,
+  reader: Pick<RelaySession, "snapshotRead">,
   task: string,
   conversation: string,
   linked: boolean,
@@ -105,7 +106,7 @@ export async function setLink(
   const writer = session.configArtifactWriter;
   if (!writer) throw new Error("This community connection can’t link tasks.");
   const id = await linkId(task, conversation);
-  const current = await head(session, id, conversation, signal);
+  const current = await head(reader, id, conversation, signal);
   const deleted = !current || tag(current, "op") === "delete";
   if (deleted !== linked) return;
   const op = linked ? (current ? "restore" : "create") : "delete";

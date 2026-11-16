@@ -145,6 +145,22 @@ it("offers to try again when the relay couldn't be asked", async () => {
   expect(handles.get(home)?.retry).toHaveBeenCalled();
 });
 
+it("shows a failed home check with a retry, not an empty thread", async () => {
+  const { handles, view } = setup();
+  view();
+  await answer(handles, conversation, {
+    status: "unavailable",
+    reason: "unavailable",
+  });
+  await answer(handles, home, { status: "unavailable", reason: "failed" });
+  expect(screen.queryByText("No comments yet.")).toBeNull();
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Couldn’t load comments.",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(handles.get(home)?.retry).toHaveBeenCalled();
+});
+
 it("says so where the community has no task comments", () => {
   setup({ conversations: false }).view();
   expect(

@@ -73,7 +73,14 @@ export function TasksPanel({
     if (linking) return;
     setLinking(true);
     try {
-      await setLink(session, task, chat, true, AbortSignal.timeout(20_000));
+      await setLink(
+        session,
+        session,
+        task,
+        chat,
+        true,
+        AbortSignal.timeout(20_000),
+      );
       setAttempt((count) => count + 1);
     } catch (reason) {
       notify(

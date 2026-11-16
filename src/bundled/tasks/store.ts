@@ -204,10 +204,13 @@ export type SaveTarget =
   | Readonly<{ op: "update"; base: Task }>
   | Readonly<{ op: "move"; base: Task; home: string }>;
 
-/** Saves one revision. A new task's caller keeps one `id` across retries, so
- * a create that landed unseen is found, not made twice. */
+/** Saves one revision, signed by the session's viewer. A new task's caller
+ * keeps one `id` across retries, so a create that landed unseen is found, not
+ * made twice. Whatever the save reads back, to see whose revision won, comes
+ * through `reader` alone: an agent's tool passes the agent's own reads. */
 export async function saveTask(
   session: RelaySession,
+  reader: TaskSource,
   fields: TaskFields,
   target: SaveTarget,
   signal: AbortSignal = AbortSignal.timeout(20_000),
@@ -254,7 +257,7 @@ export async function saveTask(
     delivery.status === "uncertain"
   ) {
     // The head shows whether this revision landed, or whose did instead.
-    const current = await readTask(session, id, signal, home).catch(
+    const current = await readTask(reader, id, signal, home).catch(
       () => undefined,
     );
     if (current?.revision === event.id)
@@ -262,7 +265,9 @@ export async function saveTask(
     if (delivery.status === "refused" && current)
       return { status: "conflict", current };
     if (delivery.status === "refused")
-      throw new Error("Someone else changed this task. Try again.");
+      throw new Error(
+        "Someone else changed or removed this task. Nothing was saved.",
+      );
   }
   throw new Error(
     delivery.status === "refused" && delivery.refusal === "permission"
@@ -271,6 +276,9 @@ export async function saveTask(
         : "You can only view tasks here."
       : delivery.status === "refused" && delivery.refusal === "too-large"
         ? "This task is too large to save. Shorten the description."
-        : "Couldn’t save the task. Try again.",
+        : // The relay's own reason, such as an assignee who can't see it.
+          delivery.status === "refused" && delivery.refusal === "invalid"
+          ? `Couldn’t save the task: ${delivery.message}`
+          : "Couldn’t save the task. Try again.",
   );
 }

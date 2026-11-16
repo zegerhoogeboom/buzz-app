@@ -86,7 +86,11 @@ export function TaskComments({
         Loading comments…
       </p>
     );
-  if (reason === "failed")
+  // Either question going unanswered is a failure to show, never "no
+  // comments yet": the home's answer decides who may start them.
+  const homeFailed =
+    home.state.status === "unavailable" && home.state.reason === "failed";
+  if (reason === "failed" || homeFailed)
     return (
       <div className={styles.actions} role="alert">
         <p className="text-body-sm text-subtle m-0">Couldn’t load comments.</p>

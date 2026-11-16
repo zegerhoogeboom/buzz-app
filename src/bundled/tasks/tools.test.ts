@@ -17,6 +17,13 @@ const home = "33333333-3333-4333-8333-333333333333";
 const secret = "55555555-5555-4555-8555-555555555555";
 /** A channel Riley isn't in. */
 const lobby = "77777777-7777-4777-8777-777777777777";
+/** A project Leo is in, a channel in it, and one shut off from it. */
+const project = "88888888-8888-4888-8888-888888888888";
+const filed = "99999999-9999-4999-8999-999999999999";
+const shut = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+/** A DM and a huddle, where no task can live. */
+const dm = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const huddle = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 type Event = {
   id: string;
@@ -46,12 +53,18 @@ const head = (
   ],
 });
 
-const place = (d: string, name: string): Event => ({
+const place = (d: string, name: string, more: string[][] = []): Event => ({
   id: d.replace(/-/g, "").padEnd(64, "0"),
   pubkey: relay,
   kind: 39000,
   content: "",
-  tags: [["d", d], ["name", name], ["private"]],
+  tags: [
+    ["d", d],
+    ["name", name],
+    ["t", more.find(([key]) => key === "t")?.[1] ?? "stream"],
+    ["private"],
+    ...more.filter(([key]) => key !== "t"),
+  ],
 });
 const roster = (d: string, members: string[]): Event => ({
   ...place(d, ""),
@@ -90,7 +103,11 @@ type Signed = { kind: number; content: string; tags: string[][] };
 
 /** The owner can read `heads` and every place; the agent can read every
  * place but `secret`, and what lives there. */
-function setup(publish: () => Promise<string>, heads: () => Event[]) {
+function setup(
+  publish: () => Promise<string>,
+  heads: () => Event[],
+  where = chat,
+) {
   const signed: Signed[] = [];
   const posted: Signed[] = [];
   const places = () => [
@@ -102,6 +119,19 @@ function setup(publish: () => Promise<string>, heads: () => Event[]) {
     roster(home, [viewer, person]),
     roster(chat, [viewer, person]),
     roster(secret, [viewer]),
+    place(project, "Payments"),
+    place(filed, "billing", [["parent", project]]),
+    place(shut, "payroll-review", [
+      ["parent", project],
+      ["parent_access", "none"],
+    ]),
+    roster(project, [viewer, leo]),
+    roster(filed, [viewer]),
+    roster(shut, [viewer]),
+    place(dm, "", [["t", "dm"]]),
+    place(huddle, "huddle-cccccccc", [
+      ["about", `Buzz Huddle (buzz.huddles/v1)\nparent:${home}`],
+    ]),
   ];
   const visible = (event: Event) =>
     !event.tags.some(
@@ -157,7 +187,7 @@ function setup(publish: () => Promise<string>, heads: () => Event[]) {
     relay: () => ({ snapshot: () => ({ status: "ready", session }) }) as never,
     addTool: (tool) => {
       tools.set(tool.name, (args) =>
-        tool.call(client as never, { channel: chat } as never, args),
+        tool.call(client as never, { channel: where } as never, args),
       );
     },
   });
@@ -213,6 +243,25 @@ it("creates in the named place as its owner, via the agent, posting nothing", as
   expect(link?.tags).toContainEqual(["h", chat]);
   expect(signed.every((event) => event.kind === 45010)).toBe(true);
   expect(posted).toHaveLength(0);
+});
+
+it("never puts a task in a DM or a huddle", async () => {
+  // Talking in a DM, the agent is asked for a place instead.
+  const { call, signed } = setup(
+    async () => "",
+    () => [head("d".repeat(64))],
+    dm,
+  );
+  await expect(call("tasks_create", { title: "Fix it" })).rejects.toThrow(
+    "never a DM or a huddle. Ask which place it should go in",
+  );
+  await expect(
+    call("tasks_create", { title: "Fix it", place: huddle }),
+  ).rejects.toThrow("never a DM or a huddle");
+  await expect(call("tasks_update", { id, place: dm })).rejects.toThrow(
+    "never a DM or a huddle",
+  );
+  expect(signed).toHaveLength(0);
 });
 
 it("returns a clear match instead of creating a duplicate", async () => {
@@ -363,6 +412,52 @@ it("refuses an assignee who can't see the task", async () => {
   expect(signed).toHaveLength(0);
 });
 
+it("counts a project's people only where the channel lets them in", async () => {
+  const there = (home: string) => () => [head("d".repeat(64), [], { home })];
+  // Filed in the project as usual: Leo, only in the project, can see it.
+  const open = setup(async () => "", there(filed));
+  await open.call("tasks_update", { id, assignees: [leo] });
+  expect(assignees(open.signed[0])).toEqual([leo]);
+  // Project access off: he can't.
+  const closed = setup(async () => "", there(shut));
+  await expect(
+    closed.call("tasks_update", { id, assignees: [leo] }),
+  ).rejects.toThrow("Leo can't see this task");
+  expect(closed.signed).toHaveLength(0);
+});
+
+it("names a project member a move shuts out", async () => {
+  const { call, signed } = setup(
+    async () => "",
+    () => [head("d".repeat(64), [["assignee", leo]], { home: filed })],
+  );
+  const preview = await call("tasks_update", { id, place: shut });
+  expect(preview).toContain(
+    "Leo can't see #payroll-review and will be unassigned.",
+  );
+  expect(preview).toContain("Payments");
+  const confirm = /confirm "([^"]+)"/.exec(preview)?.[1];
+  await call("tasks_update", { id, place: shut, confirm });
+  expect(assignees(signed[0])).toEqual([]);
+});
+
+it("shows the relay's reason when it refuses an assignee anyway", async () => {
+  const { call } = setup(
+    async () => {
+      throw new PublishRejected(
+        "rejected",
+        "invalid: assignee can't read this task",
+      );
+    },
+    () => [head("d".repeat(64))],
+  );
+  await expect(
+    call("tasks_update", { id, assignees: [person] }),
+  ).rejects.toThrow(
+    "Couldn’t save the task: invalid: assignee can't read this task",
+  );
+});
+
 it("previews a move, by place, and moves only with its confirm", async () => {
   const { call, signed } = setup(
     async () => "",
@@ -460,6 +555,54 @@ it("reapplies an update over someone else's newer save", async () => {
   expect(signed[1]?.tags).toContainEqual(["prev", "c".repeat(64)]);
   expect(signed[1]?.tags).toContainEqual(["title", "Newer"]);
   expect(tagOf(signed[1], "status")).toBe("in_progress");
+});
+
+it("never retries as the owner: a task moved where the agent can't read stays unclosed", async () => {
+  let current = head("d".repeat(64), [["status", "todo"]], {
+    title: "Launch checklist",
+  });
+  let calls = 0;
+  const { call, signed } = setup(
+    async () => {
+      if (calls++ === 0) {
+        // Moved into an owner-only chat while the agent was closing it.
+        current = head("c".repeat(64), [["status", "todo"]], {
+          home: secret,
+          title: "Launch checklist",
+        });
+        throw new PublishRejected("rejected", "conflict: stale prev");
+      }
+      return "";
+    },
+    () => [current],
+  );
+  const closing = call("tasks_update", {
+    id,
+    status: "done",
+    evidence: "Shipped",
+  });
+  await expect(closing).rejects.toThrow("Nothing was saved");
+  await expect(closing).rejects.not.toThrow("Launch checklist");
+  expect(artifacts(signed)).toHaveLength(1);
+});
+
+it("stops when a task it can still read moved during its change", async () => {
+  let current = head("d".repeat(64), [["status", "todo"]]);
+  let calls = 0;
+  const { call, signed } = setup(
+    async () => {
+      if (calls++ === 0) {
+        current = head("c".repeat(64), [["status", "todo"]], { home: chat });
+        throw new PublishRejected("rejected", "conflict: stale prev");
+      }
+      return "";
+    },
+    () => [current],
+  );
+  await expect(
+    call("tasks_update", { id, status: "in_progress" }),
+  ).rejects.toThrow("Someone moved this task");
+  expect(artifacts(signed)).toHaveLength(1);
 });
 
 it("tells the agent which id to check after an unclear create", async () => {

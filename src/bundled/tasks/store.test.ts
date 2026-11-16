@@ -56,13 +56,18 @@ const tagsOf = (sign: ReturnType<typeof session>["sign"], call: number) =>
 
 it("creates a task in its home, then edits only the revision it opened", async () => {
   const { session: relay, sign } = session(async () => "");
-  const created = await saveTask(relay, fields, { op: "create", home, id });
+  const created = await saveTask(relay, relay, fields, {
+    op: "create",
+    home,
+    id,
+  });
   expect(created.status).toBe("saved");
   expect(tagsOf(sign, 0)).toContainEqual(["op", "create"]);
   expect(tagsOf(sign, 0)).toContainEqual(["h", home]);
   expect(tagsOf(sign, 0).some(([name]) => name === "prev")).toBe(false);
   if (created.status !== "saved") return;
   await saveTask(
+    relay,
     relay,
     { ...fields, status: "done" },
     { op: "update", base: created.task },
@@ -75,7 +80,11 @@ it("creates a task in its home, then edits only the revision it opened", async (
 it("moves a task as a revision whose home is the new place", async () => {
   const { session: relay, sign } = session(async () => "");
   const base = taskOf(head("d".repeat(64))) as Task;
-  const moved = await saveTask(relay, fields, { op: "move", base, home: away });
+  const moved = await saveTask(relay, relay, fields, {
+    op: "move",
+    base,
+    home: away,
+  });
   expect(moved.status === "saved" && moved.task.home).toBe(away);
   expect(tagsOf(sign, 0)).toContainEqual(["op", "move"]);
   expect(tagsOf(sign, 0)).toContainEqual(["h", away]);
@@ -88,7 +97,7 @@ it("reports someone else's save as a conflict with their version", async () => {
     throw new PublishRejected("rejected", "conflict: stale prev");
   }, [theirs]);
   const base = taskOf(head("d".repeat(64))) as Task;
-  const result = await saveTask(relay, fields, { op: "update", base });
+  const result = await saveTask(relay, relay, fields, { op: "update", base });
   expect(result).toEqual({ status: "conflict", current: taskOf(theirs) });
 });
 
@@ -98,13 +107,18 @@ it("confirms an uncertain save from the head, else says it failed", async () => 
     throw new Error("socket closed");
   }, [head("f".repeat(64))]);
   expect(
-    (await saveTask(landed.session, fields, { op: "update", base })).status,
+    (
+      await saveTask(landed.session, landed.session, fields, {
+        op: "update",
+        base,
+      })
+    ).status,
   ).toBe("saved");
   const lost = session(async () => {
     throw new Error("socket closed");
   }, [head("d".repeat(64))]);
   await expect(
-    saveTask(lost.session, fields, { op: "update", base }),
+    saveTask(lost.session, lost.session, fields, { op: "update", base }),
   ).rejects.toThrow("Couldn’t save the task. Try again.");
 });
 
@@ -114,10 +128,14 @@ it("says why the relay refused, for an edit and for a move", async () => {
     throw new PublishRejected("rejected", "restricted: not a member");
   });
   await expect(
-    saveTask(refused.session, fields, { op: "update", base }),
+    saveTask(refused.session, refused.session, fields, { op: "update", base }),
   ).rejects.toThrow("You can only view tasks here.");
   await expect(
-    saveTask(refused.session, fields, { op: "move", base, home: away }),
+    saveTask(refused.session, refused.session, fields, {
+      op: "move",
+      base,
+      home: away,
+    }),
   ).rejects.toThrow("between places you can post in");
 });
 
@@ -125,7 +143,11 @@ it("finds a create that landed unseen instead of making a second task", async ()
   const { session: relay, sign } = session(async () => {
     throw new Error("socket closed");
   }, [head("f".repeat(64))]);
-  const result = await saveTask(relay, fields, { op: "create", home, id });
+  const result = await saveTask(relay, relay, fields, {
+    op: "create",
+    home,
+    id,
+  });
   expect(result.status).toBe("saved");
   expect(tagsOf(sign, 0)).toContainEqual(["d", id]);
 });

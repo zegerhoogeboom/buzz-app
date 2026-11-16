@@ -9,6 +9,7 @@ import { tag, type RelayEvent } from "../../features/relay/events";
 import type { RelaySession } from "../../features/relay/session";
 import { soloLabels } from "../../features/solo/labels";
 import { channelVisibility } from "../../features/relay/channel-details-protocol";
+import { huddleParent } from "../../features/huddle/lifecycle";
 import { isChannelId, isPubkey, type Task } from "./model";
 
 export type Place = Readonly<{
@@ -19,7 +20,28 @@ export type Place = Readonly<{
   parent?: string | undefined;
   /** Open to everyone in the community. */
   open?: true | undefined;
+  /** What it takes from the places above it (`parent_access`): `guest`
+   * lets their people read but not post, `none` shuts them out. */
+  parentAccess?: "guest" | "none" | undefined;
+  /** The relay's channel type (`stream`, `forum`, `dm`, …). */
+  type?: string | undefined;
+  huddle?: true | undefined;
+  archived?: true | undefined;
 }>;
+
+/** The one rule for where a task can live, for the screens and the agent
+ * tools alike: a project, channel or chat that isn't archived. Never a DM or
+ * a huddle, where a task could get no comments and no place in Tasks. */
+export const canHoldTasks = (
+  place: Readonly<{
+    type?: string | undefined;
+    huddle?: true | undefined;
+    archived?: true | undefined;
+  }>,
+) =>
+  !place.archived &&
+  !place.huddle &&
+  (place.type === "stream" || place.type === "forum" || place.type === "solo");
 
 /** A project as the Tasks page groups by it. `name` is undefined for a
  * project the viewer can't read. */
@@ -34,13 +56,31 @@ function placeOf(event: RelayEvent): Place | undefined {
   const id = tag(event, "d");
   if (!isChannelId(id)) return undefined;
   const parent = tag(event, "parent");
+  const { type, labels } = channelIdentity(event);
   return {
     id,
     name: metadataName(event) ?? id.slice(0, 8),
-    kind: soloLabels(channelIdentity(event).labels) ? "chat" : "channel",
+    kind: soloLabels(labels) ? "chat" : "channel",
+    ...(type ? { type } : {}),
+    // As discovery tells a huddle's room: private, named for its parent.
+    ...(channelVisibility(event) === "private" &&
+    huddleParent(tag(event, "about"))
+      ? { huddle: true as const }
+      : {}),
+    ...(event.tags.some(
+      ([name, value]) => name === "archived" && value === "true",
+    )
+      ? { archived: true as const }
+      : {}),
     ...(isChannelId(parent) ? { parent } : {}),
     ...(channelVisibility(event) === "public" ? { open: true as const } : {}),
+    ...parentAccessOf(event),
   };
+}
+
+function parentAccessOf(event: RelayEvent): Pick<Place, "parentAccess"> {
+  const value = tag(event, "parent_access");
+  return value === "guest" || value === "none" ? { parentAccess: value } : {};
 }
 
 /** A place other places are filed under. */
@@ -58,9 +98,9 @@ export function placeLabel(
     : `#${place.name}`;
 }
 
-/** Who can see what lives in `home`: anyone, when it or a place it is filed
- * under is open; otherwise the members of those places, from their
- * relay-signed rosters. The relay refuses an assignee who can't. */
+/** Who can see what lives in `home`: anyone, when a place it is seen from
+ * is open; otherwise the members of those places, from their relay-signed
+ * rosters. The relay refuses an assignee who can't. */
 export async function readReaders(
   session: Pick<RelaySession, "snapshotRead" | "relayAuthor">,
   home: string,
@@ -70,7 +110,7 @@ export async function readReaders(
   const author = session.relayAuthor;
   if (!read || !author) return { anyone: false, people: new Set() };
   const places = await readPlaces(session, [home], signal);
-  const chain = chainOf(home, places);
+  const chain = seenFrom(home, places);
   if (chain.some((id) => places.get(id)?.open))
     return { anyone: true, people: new Set() };
   const rosters = await read(
@@ -134,13 +174,16 @@ export function projectOf(
     : { id: undefined, name: undefined };
 }
 
-/** `id` and the places it is filed under, nearest first: everyone who can
- * read one of these reads what lives in `id`. */
-function chainOf(id: string, places: ReadonlyMap<string, Place>) {
+/** The places whose people can see what lives in `id`: itself, then each
+ * place it is filed under, as far as `parent_access` lets them in. A place
+ * set to `none` keeps everyone above it out, as the relay does. */
+function seenFrom(id: string, places: ReadonlyMap<string, Place>) {
   const chain = [id];
-  for (let at = places.get(id)?.parent; at && !chain.includes(at); ) {
-    chain.push(at);
-    at = places.get(at)?.parent;
+  for (let place = places.get(id); place?.parentAccess !== "none"; ) {
+    const parent = place?.parent;
+    if (!parent || chain.includes(parent)) break;
+    chain.push(parent);
+    place = places.get(parent);
   }
   return chain;
 }
@@ -153,8 +196,8 @@ export function accessChange(
   to: string,
   places: ReadonlyMap<string, Place>,
 ): Readonly<{ gain: readonly Place[]; lose: readonly Place[] }> {
-  const before = chainOf(from, places);
-  const after = chainOf(to, places);
+  const before = seenFrom(from, places);
+  const after = seenFrom(to, places);
   const named = (ids: readonly string[]) =>
     ids.flatMap((id) => places.get(id) ?? []);
   return {

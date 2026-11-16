@@ -27,6 +27,7 @@ import {
 } from "./model";
 import {
   accessChange,
+  canHoldTasks,
   type Place,
   placeLabel,
   projectOf,
@@ -222,12 +223,17 @@ export function addTaskTools(agents: Agents) {
     return task;
   }
 
-  /** Throws unless the agent can read place `id`. */
+  /** Throws unless the agent can read place `id` and a task can live there. */
   async function readable(reads: TaskSource, id: string, signal: AbortSignal) {
     const places = await readPlaces(reads, [id], signal);
-    if (!places.has(id))
+    const place = places.get(id);
+    if (!place)
       throw new Error(
         "You can't see that place, so a task can't go there. Nothing changed.",
+      );
+    if (!canHoldTasks(place))
+      throw new Error(
+        "A task can live in a project, channel or chat that isn't archived, never a DM or a huddle. Ask which place it should go in. Nothing changed.",
       );
     return places;
   }
@@ -244,6 +250,7 @@ export function addTaskTools(agents: Agents) {
     revision?: string,
   ) {
     let task = await current(reads, id, signal);
+    const from = task.home;
     for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
       signal.throwIfAborted();
       if (revision && task.revision !== revision)
@@ -254,9 +261,15 @@ export function addTaskTools(agents: Agents) {
         home && home !== task.home
           ? { op: "move" as const, base: task, home }
           : { op: "update" as const, base: task };
-      const result = await saveTask(session, edit(task), target, signal);
+      const result = await saveTask(session, reads, edit(task), target, signal);
       if (result.status === "saved") return result.task;
+      // Someone else saved first; the agent's own read found their version.
+      // A task that moved meanwhile isn't changed in its new place unseen.
       task = result.current;
+      if (task.home !== from)
+        throw new Error(
+          "Someone moved this task while you were changing it. Nothing changed; read it again with tasks_find.",
+        );
     }
     throw new Error("Others keep changing this task. Try again.");
   }
@@ -425,6 +438,7 @@ export function addTaskTools(agents: Agents) {
       const id = crypto.randomUUID();
       const result = await saveTask(
         session,
+        reads,
         fields,
         { op: "create", home, id, via: client.pubkey },
         signal,
@@ -438,7 +452,7 @@ export function addTaskTools(agents: Agents) {
       const chat = context.channel;
       const linked =
         args.link !== false && isChannelId(chat) && chat !== home
-          ? await setLink(session, id, chat, true, signal).then(
+          ? await setLink(session, reads, id, chat, true, signal).then(
               () =>
                 "\nLinked this conversation; only people who can read it see that.",
               () => "\nCouldn't link this conversation.",

@@ -167,6 +167,7 @@ function TaskDetails({
     try {
       const result = await saveTask(
         session,
+        session,
         { ...fieldsOf(task), ...next },
         { op: "update", base: task },
       );
@@ -560,6 +561,7 @@ function LinkedConversations({
     try {
       await setLink(
         session,
+        session,
         task.id,
         conversation,
         linked,
@@ -742,6 +744,7 @@ function MoveTask({
     try {
       const result = await saveTask(
         session,
+        session,
         {
           ...fieldsOf(task),
           assignees: task.assignees.filter((key) => !dropped.includes(key)),
@@ -910,7 +913,7 @@ function TaskEditor({
     setError("");
     setSaving(true);
     try {
-      const result = await saveTask(session, draft, save);
+      const result = await saveTask(session, session, draft, save);
       if (result.status === "saved") {
         onSaved(result.task);
         onDone(true);

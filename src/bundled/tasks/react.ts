@@ -13,7 +13,7 @@ import type {
 import type { ChannelSummary } from "../../features/relay/contracts";
 import { useChannelRoster } from "../../features/relay/react";
 import type { Task } from "./model";
-import { type Place, readPlaces } from "./places";
+import { canHoldTasks, type Place, readPlaces } from "./places";
 import { type TasksState, type TasksView, watchTasks } from "./store";
 
 const loading: TasksView = {
@@ -106,16 +106,16 @@ export function usePlaces(
   return places;
 }
 
-/** Places a task can live in: channels and chats, not DMs, huddles or
- * archived ones. Whether the viewer may post there is the relay's answer
+/** Listed places a task can live in, by the one rule (`canHoldTasks`).
+ * Whether the viewer may post there is the relay's answer
  * (`usePlaceAccess`), never this list's. */
 export const isTaskPlace = (channel: ChannelSummary) =>
-  !channel.archived &&
   !channel.pending &&
-  !channel.huddle &&
-  (channel.channelType === "stream" ||
-    channel.channelType === "forum" ||
-    channel.channelType === "solo");
+  canHoldTasks({
+    type: channel.channelType,
+    huddle: channel.huddle,
+    archived: channel.archived,
+  });
 
 /** The places the viewer knows of, those this device already knows they can
  * post in first. */
