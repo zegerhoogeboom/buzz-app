@@ -116,6 +116,7 @@ import { useMemberOwners } from "./useMemberOwners";
 import { useSoloShare } from "./useSoloShare";
 import { useReauthorizedRetry } from "../../features/relay/RecoveryNotice";
 import { ChannelGeneralAccess } from "./ChannelGeneralAccess";
+import { ChannelConnections } from "./ChannelConnections";
 import { avatarMedia } from "../../shared/avatar-source";
 import { channelIcon, channelText } from "../../features/channels/channel-icon";
 import { writeClipboardText } from "../../shared/clipboard";
@@ -2327,6 +2328,12 @@ export function ChannelMembersDialog({
             data-refreshing={refreshing}
           >
             {accessControl}
+            {channel && !channel.cached && (
+              <ChannelConnections
+                connect={session.channelConnect}
+                channel={channel}
+              />
+            )}
             {!canAdd && !readOnlyAccess && !(solo && rosterBusy) && (
               <p className="px-control-inset text-body-sm text-subtle">
                 {channel?.channelType === "dm"

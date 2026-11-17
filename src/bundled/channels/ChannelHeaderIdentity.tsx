@@ -47,6 +47,7 @@ export function ChannelHeaderIdentity({
   channelId,
   name,
   detail,
+  shared,
   access,
   ...props
 }: Omit<
@@ -58,13 +59,15 @@ export function ChannelHeaderIdentity({
   name: string;
   /** Extra context, such as a Solo chat's owner, for the name and hint. */
   detail?: string | undefined;
+  /** The other community's name when the channel is shared (Buzz Connect). */
+  shared?: string | undefined;
   /** From `memberAccess`, so the name matches the dialog it opens. */
   access: ReturnType<typeof memberAccess>;
 }) {
   return (
     <SurfaceButton
       {...props}
-      aria-label={`${access.label(name)}${detail ? `, ${detail}` : ""}`}
+      aria-label={`${access.label(name)}${shared ? `, shared with ${shared}` : ""}${detail ? `, ${detail}` : ""}`}
       title={detail ?? access.title}
       aria-haspopup="dialog"
       className={styles.identity}
@@ -74,6 +77,14 @@ export function ChannelHeaderIdentity({
       </span>
       <span className={styles.label}>
         <span className={`${styles.name} text-body-sm`}>{name}</span>
+        {shared && (
+          <span
+            className={`${styles.name} ${styles.shared} text-body-sm`}
+            aria-hidden="true"
+          >
+            Shared with {shared}
+          </span>
+        )}
       </span>
     </SurfaceButton>
   );

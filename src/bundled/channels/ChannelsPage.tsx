@@ -2664,6 +2664,7 @@ function ChannelWorkspace({
                           session={queries}
                           channelId={current.id}
                           name={current.name}
+                          shared={current.connected?.community}
                           access={memberAccess(current)}
                           ref={membersHeaderTrigger}
                           aria-expanded={membersOpen}
