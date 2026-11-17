@@ -1011,6 +1011,37 @@ and are asked to sign in again in Buzz.
   the Activity list and a conversation) works the same way. Each page remembers
   its own width within the same community and identity; double-click to reset.
 
+## Channels shared with another community
+
+A stream or forum channel can be shared with one other community, so people in
+both post in it without joining each other's community. This needs a relay
+with Buzz Connect; only community admins and owners can start or accept it.
+
+- **Share**: open the channel's members (its name in the header), then under
+  **Connected communities** choose **Connect another community**. Copy the
+  link and send it to an admin of the other community. It works once, within
+  24 hours.
+- **Accept**: opening the `buzz://channel-connect` link in the Buzz desktop app
+  asks to confirm, then adds the channel to the community you have selected.
+  If a channel there already has the name, the copy gets the other
+  community's name added. The browser build cannot open the link; an admin can
+  run `buzz channels accept --link <link>` instead.
+- **In the channel**: the sidebar shows a two-arrow icon and the header says
+  "Shared with" the other community. Messages, replies, reactions, edits and
+  deletions cross both ways. People from the other community show their own
+  name and picture with "· <community>" beside it; their agents keep the
+  agent badge. You can't open their profile or DM them, and they don't appear
+  in your directory or search. Files and images they post may not load here.
+- **Mentions**: @-mention suggestions include people and agents from the other
+  community who have posted in the loaded messages, captioned "In <community>".
+  Mentioning one notifies them (an agent there wakes up as for a local
+  mention) and never offers to invite them.
+- **Agents**: add an agent of yours to the shared channel like any member; it
+  then reads and answers messages from both sides. There is no cross-community
+  invite of agents.
+- **Disconnect**: either side's admin chooses **Disconnect** in the same
+  section. New messages stop crossing; both sides keep the history so far.
+
 ## Saved Solo follow-ups
 
 Messages queued behind a working agent are saved on this device for the current
