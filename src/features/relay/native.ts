@@ -7,6 +7,7 @@ import {
   verifiedProfileAuthority,
   verifiedProfileDiscovery,
 } from "./verified-profile";
+import { CHANNEL_CONNECT_KINDS } from "../channels/connect";
 import { nativeSocket } from "./native-socket";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -92,6 +93,7 @@ async function nativeReadInvoke<T>(
 }
 
 export const nativeWriteKinds = [
+  ...CHANNEL_CONNECT_KINDS,
   48103,
   30078,
   7,

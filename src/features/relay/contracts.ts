@@ -3,6 +3,7 @@ import type { ReadFilter } from "./events";
 import type { CustomEmoji } from "./emoji";
 import type { ReadOptions } from "./reader";
 import type { Delivery } from "./outbox";
+import type { ChannelConnection } from "../channels/connect";
 
 export const MAX_ATTACHMENT_DURATION_SECONDS = 86_400;
 
@@ -75,6 +76,9 @@ export type ChannelSummary = Readonly<{
   createdAt?: number;
   /** Other DM members from the authorized roster; empty for a self-DM. */
   participants?: readonly string[];
+  /** Relay-signed Buzz Connect state: the channel is shared with another
+   * community, whose people post here without joining this one. */
+  connected?: ChannelConnection;
 }>;
 export type Profile = Readonly<{
   /** Relay-signed name assertion; display only, never account access. */
