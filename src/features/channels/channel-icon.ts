@@ -1,5 +1,6 @@
 import type { ChannelSummary } from "../relay/contracts";
 import {
+  ArrowsLeftRightIcon,
   ChatCircleIcon,
   HashIcon,
   LockIcon,
@@ -8,7 +9,7 @@ import {
 /** What names a channel and chooses how it is shown. */
 export type ChannelLabel = Pick<
   ChannelSummary,
-  "name" | "private" | "channelType"
+  "name" | "private" | "channelType" | "connected"
 >;
 
 /** Ordinary channel visibility chooses its icon, as the sidebar shows it;
@@ -18,11 +19,14 @@ export function channelIcon(
     | {
         readonly private?: true | undefined;
         readonly channelType?: string | undefined;
+        readonly connected?: ChannelSummary["connected"];
       }
     | undefined,
 ) {
   if (channel?.channelType === "solo" || channel?.channelType === "dm")
     return ChatCircleIcon;
+  // Shared with another community (Buzz Connect), public or private.
+  if (channel?.connected) return ArrowsLeftRightIcon;
   return channel?.private ? LockIcon : HashIcon;
 }
 
@@ -30,6 +34,8 @@ export function channelIcon(
 export function channelIconLabel(channel: Parameters<typeof channelIcon>[0]) {
   if (channel?.channelType === "solo") return "Chat";
   if (channel?.channelType === "dm") return "Direct message";
+  if (channel?.connected)
+    return `Channel shared with ${channel.connected.community}`;
   return channel?.private ? "Private channel" : "Public channel";
 }
 

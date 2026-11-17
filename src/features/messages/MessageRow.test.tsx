@@ -1703,6 +1703,44 @@ it.each([
   },
 );
 
+it.each([
+  { members: ["c".repeat(64)], marked: true },
+  { members: ["b".repeat(64)], marked: false },
+])(
+  "marks an author from the other community of a shared channel (%o)",
+  ({ members, marked }) => {
+    const list = {
+      channels: [
+        {
+          id: row.channelId,
+          channelType: "stream",
+          members,
+          connected: { relay: "wss://a.example", community: "a.example" },
+        },
+      ],
+      status: "ready",
+    };
+    const references = {
+      channels: { list: () => list, subscribeList: () => () => {} },
+    } as unknown as RelaySession;
+    const view = renderMessage({
+      row: { ...row, authorId: "b".repeat(64) },
+      references,
+      profile: { name: "Remy" },
+      canOpenLink: () => true,
+    });
+    try {
+      expect(view.container.textContent?.includes("· a.example")).toBe(marked);
+      // No profile here to open for someone from the other community.
+      expect(!!view.container.querySelector("[data-message-author]")).toBe(
+        !marked,
+      );
+    } finally {
+      view.unmount();
+    }
+  },
+);
+
 it.each([true, false])(
   "offers thread starts only where the conversation starts threads (startsThreads=%s)",
   (startsThreads) => {

@@ -10,6 +10,7 @@ import { objectBody } from "./body";
 import { newer, hasTag, tag, type RelayEvent } from "./events";
 import type { ChannelSummary } from "./contracts";
 import { channelIdentity } from "./channel-labels";
+import { channelConnection } from "../channels/connect";
 
 const names = new WeakMap<RelayEvent, string | undefined>();
 /** Display name from signed channel metadata; the content body overrides the tag. */
@@ -483,6 +484,7 @@ export class DiscoveryState {
         : undefined;
     const identity = event && channelIdentity(event);
     const ttlSeconds = event && channelTtl(event);
+    const connected = event && channelConnection(event);
     // Legacy generated rooms lack creation proof. This is presentation only;
     // their parent still needs independent signed lifecycle evidence.
     const legacyHuddle =
@@ -519,6 +521,7 @@ export class DiscoveryState {
         : {}),
       ...(event && hasTag(event, "archived", "true") ? { archived: true } : {}),
       ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+      ...(connected ? { connected } : {}),
       ...(identity?.labels.length ? { labels: identity.labels } : {}),
       ...(identity?.creator ? { creator: identity.creator } : {}),
       ...(identity?.createdAt !== undefined

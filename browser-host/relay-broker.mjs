@@ -39,6 +39,10 @@ import { uploadAttachment, UploadError } from "./attachment-upload.mjs";
 import { validateUploadResult } from "../src/features/relay/attachments.ts";
 import { validChannelCommand } from "./channel-commands.mjs";
 import {
+  CHANNEL_CONNECT_KINDS,
+  validChannelConnectCommand,
+} from "../src/features/channels/connect.ts";
+import {
   adminReason,
   claimReason,
   inviteRequest,
@@ -1685,6 +1689,7 @@ export function relayBrokerPlugin({
                 ...((await getAuthority(relay)).artifactSupport ? [45010] : []),
                 ...WORKFLOW_KINDS,
                 ...((await getAuthority(relay)).channelCreation ? [9007] : []),
+                ...CHANNEL_CONNECT_KINDS,
               ],
               channelLifecycle: true,
               channelDetails: true,
@@ -3030,6 +3035,12 @@ export function relayBrokerPlugin({
                 return json(res, 400, {
                   error:
                     "Agent enrollment or channel operation unavailable or invalid",
+                  sent: false,
+                });
+            } else if (CHANNEL_CONNECT_KINDS.includes(filters?.kind)) {
+              if (!validChannelConnectCommand(filters))
+                return json(res, 400, {
+                  error: "Invalid shared channel command",
                   sent: false,
                 });
             } else if (filters?.kind === 42000) {

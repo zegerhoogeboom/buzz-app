@@ -32,6 +32,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.shared {
+  color: var(--text-subtle);
+}
 .identity:hover {
   background: var(--affordance-subtle-hover);
 }

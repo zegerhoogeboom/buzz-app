@@ -1,3 +1,4 @@
+import { remoteAuthors } from "../channels/connect";
 import { draftEditorId, traceDraft } from "../../shared/draft-diagnostics";
 import {
   soloModelPicksKey,
@@ -2955,10 +2956,17 @@ function Composer({
             if (brought === null) return;
             added = brought;
           }
+          // People from the other community of a shared channel are named
+          // and notified, never invited (Buzz Connect).
+          const remote = remoteAuthors(
+            channel,
+            session.channels.window?.(channelId).rows,
+          );
           const missing = captured.recipients.filter(
             (person) =>
               !channel.members?.includes(person.pubkey) &&
-              !added.includes(person.pubkey),
+              !added.includes(person.pubkey) &&
+              !remote.includes(person.pubkey),
           );
           if (missing.length && channel?.channelType === "dm") {
             // Nobody can be added to a DM, so there is no choice to offer:

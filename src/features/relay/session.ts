@@ -1,6 +1,7 @@
 import type { LocalAgentSource } from "../agents/local-activity";
 // FOUNDATION: One relay session owns reads, local intent, delivery and shared views.
 import { createSoloPreferences, soloGroups } from "./solo-preferences";
+import { createChannelConnect } from "../channels/connect";
 import { npubEncode } from "nostr-tools/nip19";
 import { createMemberAdditions } from "../channel-members/operations";
 import {
@@ -1579,6 +1580,12 @@ export function createRelaySession(
       ? channel.members.filter((key) => key !== transport.viewer)
       : [];
   }
+  /** Buzz Connect: the other community's people post here without joining. */
+  function sharedChannel(channelId: string) {
+    return !!channels.queries
+      .list()
+      .channels.find((item) => item.id === channelId)?.connected;
+  }
   function validateMentions(channelId: string, pubkeys: readonly string[]) {
     if (!pubkeys.length) return;
     const channel = channels.queries
@@ -1599,7 +1606,12 @@ export function createRelaySession(
         !addressesPartnerOnly)
     )
       throw new Error("Refresh channel membership before mentioning anyone");
-    if (pubkeys.some((key) => !channel.members?.includes(key)))
+    // A shared channel's people from the other community are never members
+    // here; the composer decides who of them it names (Buzz Connect).
+    if (
+      !sharedChannel(channelId) &&
+      pubkeys.some((key) => !channel.members?.includes(key))
+    )
       throw new Error(
         "A selected recipient is no longer a channel member; remove them or refresh membership",
       );
@@ -1774,9 +1786,10 @@ export function createRelaySession(
     validateMentionEvent(event); // A newer live removal beats an older read result.
     if (
       !hasTag(roster, "p", transport.viewer) ||
-      event.tags.some(
-        ([name, key]) => name === "p" && !hasTag(roster, "p", key ?? ""),
-      )
+      (!sharedChannel(channelId) &&
+        event.tags.some(
+          ([name, key]) => name === "p" && !hasTag(roster, "p", key ?? ""),
+        ))
     )
       throw new Error(
         "A selected recipient is no longer a channel member; remove them or refresh membership",
@@ -2633,6 +2646,7 @@ export function createRelaySession(
     channelKit: channelKit.capability,
     canvas: channelKit.canvas,
     channelWrites,
+    channelConnect: createChannelConnect(writer),
     directMessages: createDirectMessages(
       transport,
       verified,
