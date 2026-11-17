@@ -256,3 +256,43 @@ it("offers the viewer's agents in a DM, where they are named but never added", (
   expect(offered).toContainEqual([key(6), false, true]);
   expect(offered.map(([pubkey]) => pubkey)).not.toContain(key(7));
 });
+
+it("offers a shared channel's authors from the other community, captioned with it", () => {
+  const remote = key(9);
+  const shared = (connected: boolean) => {
+    const session = fresh() as unknown as {
+      channels: Record<string, unknown>;
+    };
+    session.channels = {
+      list: () => ({
+        status: "ready",
+        channels: [
+          {
+            id: "c",
+            name: "C",
+            channelType: "stream",
+            members,
+            ...(connected
+              ? {
+                  connected: {
+                    relay: "wss://a.example",
+                    community: "a.example",
+                  },
+                }
+              : {}),
+          },
+        ],
+      }),
+      window: () => ({ rows: [{ authorId: remote }, { authorId: key(1) }] }),
+    };
+    return mentionCandidates(session as unknown as ComposerSession, "c").find(
+      (row) => row.recipient.pubkey === remote,
+    );
+  };
+  expect(shared(true)).toMatchObject({
+    member: false,
+    elsewhere: "a.example",
+    owned: false,
+  });
+  expect(shared(false)).toBeUndefined();
+});

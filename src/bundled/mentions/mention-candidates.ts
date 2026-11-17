@@ -6,6 +6,7 @@ import {
   verifiedLabel,
 } from "../../features/profiles/name-preference";
 import { knownAgentPubkeys } from "../../features/agents/known";
+import { remoteAuthors } from "../../features/channels/connect";
 import type { Agent } from "../../features/agents/service";
 import { communityHost } from "../../features/messages/community-host";
 import {
@@ -127,6 +128,7 @@ export function mentionCandidates(
     JSON.stringify(
       elsewhere.map(({ pubkey, name, relay }) => [pubkey, name, relay]),
     ),
+    JSON.stringify(sharedChannelAuthors(session, channelId)),
   ];
   const key = JSON.stringify([channelId, inviteAgents]);
   const channels: Map<
@@ -177,6 +179,13 @@ export function directoryChanges<T extends DirectoryPerson>(
       (!person.isAgent || row.agent)
     );
   });
+}
+
+function sharedChannelAuthors(session: ComposerSession, channelId: string) {
+  return remoteAuthors(
+    mentionChannel(session, channelId),
+    session.channels.window?.(channelId).rows,
+  );
 }
 
 function buildCandidates(
@@ -236,6 +245,17 @@ function buildCandidates(
       choices.set(agent.pubkey, { pubkey: agent.pubkey, name: agent.name });
       hosts.set(agent.pubkey, host);
     }
+  // A shared channel's authors from the other community: named, never
+  // invited (Buzz Connect). Only where outside people are offered at all.
+  const remote = new Set(
+    !roster && !inviteAgents ? sharedChannelAuthors(session, channelId) : [],
+  );
+  for (const pubkey of remote)
+    if (!choices.has(pubkey))
+      choices.set(pubkey, {
+        pubkey,
+        name: profiles.get(pubkey)?.name || pubkey.slice(0, 12),
+      });
   for (const pubkey of members)
     choices.set(pubkey, {
       pubkey,
@@ -309,7 +329,9 @@ function buildCandidates(
         /** The host of the owner's other community this agent is in. */
         ...(hosts.has(recipient.pubkey)
           ? { elsewhere: hosts.get(recipient.pubkey) }
-          : {}),
+          : remote.has(recipient.pubkey) && channel?.connected
+            ? { elsewhere: channel.connected.community }
+            : {}),
         agent:
           hosts.has(recipient.pubkey) ||
           known.has(recipient.pubkey) ||

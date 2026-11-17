@@ -1,3 +1,4 @@
+import { remoteCommunity } from "../channels/connect";
 import { requestWork, isSettledWork } from "../agents/request-work";
 import { ActivityDisclosure } from "./ActivityDisclosure";
 import { ActivityOutcome } from "./ActivityOutcome";
@@ -373,9 +374,17 @@ function MessageRowContent({
   const target = profileTarget(row.authorId, {
     agent: !!(row.agentEnvelope || agentPubkeys?.has(row.authorId)),
   });
-  const clickable = target && canOpenLink?.(target);
+  // Someone from the other community of a shared channel: no profile,
+  // directory or DM here, only their name and where they are from.
+  const remote = useListedChannel(
+    (session ?? references)?.channels,
+    row.channelId,
+    (channel) => remoteCommunity(channel, row.authorId),
+  );
+  const clickable = !remote && target && canOpenLink?.(target);
   const activityView = profileActivityViewTarget(row.authorId);
   const canViewActivity =
+    !remote &&
     !!(
       row.agentEnvelope ||
       agentPubkeys?.has(row.authorId) ||
@@ -1302,6 +1311,12 @@ function MessageRowContent({
                     viewer={viewer}
                     pubkey={row.authorId}
                   />
+                )}
+                {remote && !stackPrevious && (
+                  <span className={styles.authorOwner}>
+                    <span aria-hidden="true">· </span>
+                    {remote}
+                  </span>
                 )}
                 {ownerLabel && (
                   <span className={styles.authorOwner}>
