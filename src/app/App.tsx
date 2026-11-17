@@ -4,6 +4,7 @@ import { Welcome } from "../features/identity/Welcome";
 import { NewMenu } from "./shell/NewMenu";
 import { PrimarySidebar } from "./shell/PrimarySidebar";
 import { sidebarTarget } from "../features/channel-navigation/routes";
+import { ChannelConnectDialog } from "../features/channels/ChannelConnectDialog";
 import { ChannelNavigationProvider } from "../features/channel-navigation/ChannelNavigationState";
 import { AgentsContext } from "../features/agents/react";
 import { ToastProvider } from "../shared/design-system/ui/Toast";
@@ -764,6 +765,11 @@ function ConnectedAppContent({ services }: { services: AppServices }) {
             agents={services.agents}
             communities={services.communities}
             relay={services.relay}
+          />
+          <ChannelConnectDialog
+            requests={services.channelConnectRequests}
+            relay={services.relay}
+            navigation={services.navigation}
           />
           <InterruptedNotice agents={services.agents} />
           <MediaMenuDownloadNotice />

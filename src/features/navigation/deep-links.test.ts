@@ -181,6 +181,7 @@ function harness(initial: Client, pending: string[] = []) {
     },
     accepted: vi.fn(),
     authorize: vi.fn(),
+    connectChannel: vi.fn(),
   };
   const stop = bindDeepLinks(
     host,
@@ -238,6 +239,30 @@ it("holds external authorization through startup without adding handshake data t
     expect(t.host.navigation.open).not.toHaveBeenCalled();
     expect(JSON.stringify(t.controller.navigation.snapshot())).not.toContain(
       "code_challenge",
+    );
+  } finally {
+    t.stop();
+  }
+});
+it("asks to confirm a shared-channel link once ready, without opening anything", async () => {
+  const uuid = "0b6f3c1e-8f7a-4d2b-9c3e-5a1d2e3f4a5b";
+  const link = `buzz://channel-connect?relay=wss%3A%2F%2Fa.example&channel=${uuid}&code=ab12`;
+  const t = harness(loading, [link]);
+  try {
+    await vi.waitFor(() => expect(t.take).toHaveBeenCalled());
+    expect(t.host.connectChannel).not.toHaveBeenCalled();
+    t.become(ready);
+    await vi.waitFor(() =>
+      expect(t.host.connectChannel).toHaveBeenCalledOnce(),
+    );
+    expect(t.host.connectChannel).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: uuid, community: "a.example", link }),
+      viewer,
+    );
+    expect(t.host.navigation.open).not.toHaveBeenCalled();
+    expect(t.host.rejected).not.toHaveBeenCalled();
+    expect(JSON.stringify(t.controller.navigation.snapshot())).not.toContain(
+      "ab12",
     );
   } finally {
     t.stop();
